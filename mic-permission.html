@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>HB WatchParty - Mikrofon İzni</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #0f0f0f;
+            color: #fff;
+            padding: 24px;
+            text-align: center;
+        }
+        button {
+            margin-top: 16px;
+            padding: 10px 20px;
+            border-radius: 18px;
+            border: none;
+            background: #3ea6ff;
+            color: #0f0f0f;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        button:hover { background: #65b8ff; }
+        #status { margin-top: 14px; font-size: 13px; color: #aaa; }
+    </style>
+</head>
+<body>
+    <!--
+        Bu sayfa background.js tarafından bir chrome.windows.create popup'ı
+        olarak açılır (bkz. background.js VOICE_JOIN handler'ı). Sadece
+        mikrofon izin diyaloğunu GÖRÜNÜR bir pencerede tetiklemek için var —
+        offscreen document görünmez olduğu için Chrome izin balonunu orada
+        gösteremiyor. İzin bir kez verilince aynı origin için kalıcı olarak
+        hatırlanır, bu pencereye bir daha gerek kalmaz.
+    -->
+    <h3>Mikrofon İzni Gerekiyor</h3>
+    <p>Sesli sohbeti kullanabilmek için mikrofon erişimine izin vermeniz gerekiyor.</p>
+    <button id="grant-btn">Mikrofona İzin Ver</button>
+    <div id="status"></div>
+    <script src="mic-permission.js"></script>
+</body>
+</html>

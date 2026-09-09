@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "HB Watch Party",
+  "version": "1.0",
+  "description": "YouTube Watch Party ve Sohbet Eklentisi",
+  "permissions": ["offscreen", "storage"],
+  "host_permissions": ["*://*.youtube.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Watch Party Paneli"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/watch*"],
+      "js": ["signalr.min.js", "content.js"],
+      "css": ["content.css"]
+    }
+  ]
+}

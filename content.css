@@ -1,0 +1,747 @@
+/* Panel artık #ytd-player'ın İÇİNDE değil, onun kardeşi (sibling) olarak
+   ekleniyor (bkz. content.js .after() kullanımı) — bu yüzden flex container
+   bir seviye yukarıdaki #player-container olmalı, #ytd-player'ın kendisi değil.
+   YouTube #ytd-player'ın İÇİNİ yeniden çizdiğinde (video değişiminde sıkça
+   olur) bu dıştaki sibling'i etkilemez; panel silinmez. */
+#player-container.style-scope {
+    display: flex !important;
+    flex-direction: row !important;
+    max-width: 100% !important;
+    width: 100% !important;
+}
+
+/* Oynatıcının kendisi (artık panelin kardeşi) solda esnek dursun */
+#ytd-player.style-scope {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+}
+
+/* ===== Tasarım token'ları =====
+   Sade, tek (koyu) temalı bir palet — YouTube'un kendi koyu arayüzüyle
+   bütünleşecek şekilde. Renk/aralık/köşe değerleri burada tek yerden
+   yönetiliyor ki tutarlılık kolay korunsun. */
+#hb-party-panel {
+    --hp-bg: #0f0f0f;
+    --hp-surface: #191919;
+    --hp-surface-2: #212121;
+    --hp-border: rgba(255, 255, 255, 0.09);
+    --hp-border-strong: rgba(255, 255, 255, 0.16);
+    --hp-text: #f1f1f1;
+    --hp-text-muted: #9a9a9a;
+    --hp-accent: #4f9dff;
+    --hp-accent-hover: #6fb1ff;
+    --hp-accent-active: #3a84e0;
+    --hp-accent-contrast: #0b1220;
+    --hp-success: #2fb35c;
+    --hp-success-strong: #8be3a6; /* açık temada daha koyu bir varyantla override edilir, bkz. hp-theme-light */
+    --hp-danger: #e5534b;
+    --hp-danger-hover: #f0716a;
+    --hp-radius-sm: 8px;
+    --hp-radius-md: 12px;
+    --hp-radius-lg: 16px;
+    --hp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --hp-shadow-md: 0 6px 20px rgba(0, 0, 0, 0.35);
+
+    flex: 0 0 380px !important;
+    width: 380px !important;
+    background-color: var(--hp-bg) !important;
+    border-left: 1px solid var(--hp-border) !important;
+    box-shadow: var(--hp-shadow-md) !important;
+    padding: 16px !important;
+    color: var(--hp-text) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+    font-size: 13px !important;
+    line-height: 1.45 !important;
+    display: none; /* Başlangıçta gizli */
+    flex-direction: column !important;
+    gap: 14px !important;
+    box-sizing: border-box !important;
+    height: 100% !important;
+    min-height: 480px !important;
+    z-index: 99999 !important;
+    position: relative !important; /* hp-user-list-popover'ın absolute konumlanması bu panele göre olsun diye */
+    transition: background-color 150ms ease, color 150ms ease !important; /* tema değişiminde yumuşak geçiş */
+}
+
+/* Panel Boyutu ayarı (bkz. content.js hp-panel-size-group). Ayar yoksa/"orta"
+   seçiliyse yukarıdaki 380px varsayılanı geçerli kalır — mevcut kullanıcılar
+   için görünüm değişmez. */
+#hb-party-panel.hp-size-small {
+    flex: 0 0 300px !important;
+    width: 300px !important;
+}
+#hb-party-panel.hp-size-large {
+    flex: 0 0 460px !important;
+    width: 460px !important;
+}
+
+/* AÇIK TEMA (bkz. content.js hp-theme-group). Bütün bileşenler yukarıdaki
+   --hp-* token'larını kullandığı için burada sadece token değerlerini
+   değiştirmek panelin tamamını (mesajlar, butonlar, popover'lar dahil)
+   tutarlı şekilde açık temaya çeviriyor. */
+#hb-party-panel.hp-theme-light {
+    --hp-bg: #ffffff;
+    --hp-surface: #f4f4f6;
+    --hp-surface-2: #eaeaed;
+    --hp-border: rgba(0, 0, 0, 0.10);
+    --hp-border-strong: rgba(0, 0, 0, 0.18);
+    --hp-text: #1a1a1a;
+    --hp-text-muted: #68686d;
+    --hp-accent: #2f6fe4;
+    --hp-accent-hover: #4f86ec;
+    --hp-accent-active: #2559bd;
+    --hp-accent-contrast: #ffffff;
+    --hp-success: #1f9e52;
+    --hp-success-strong: #167a3f;
+    --hp-danger: #d1453b;
+    --hp-danger-hover: #b93a31;
+    --hp-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+    --hp-shadow-md: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+
+#hb-party-panel *,
+#hb-party-panel *::before,
+#hb-party-panel *::after {
+    box-sizing: border-box !important;
+}
+
+#hp-header {
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    border-bottom: 1px solid var(--hp-border) !important;
+    padding-bottom: 12px !important;
+    font-weight: 600 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.1px !important;
+}
+
+/* Başlığın önüne, DOM'a dokunmadan sade bir marka vurgusu */
+#hp-header span:first-child {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+#hp-header span:first-child::before {
+    content: "" !important;
+    display: inline-block !important;
+    width: 8px !important;
+    height: 8px !important;
+    border-radius: 2px !important;
+    background: var(--hp-accent) !important;
+}
+
+#hp-header-right {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+#hp-status {
+    font-size: 11.5px !important;
+    color: var(--hp-text-muted) !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    padding: 4px 10px !important;
+    border-radius: 999px !important;
+}
+
+/* Küçük, sade ikon butonlar: Ayarlar (⚙️) ve Ayarlar panelini kapat (✕) */
+.hp-icon-btn {
+    background: transparent !important;
+    color: var(--hp-text-muted) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    width: 26px !important;
+    height: 26px !important;
+    padding: 0 !important;
+    font-size: 13px !important;
+    line-height: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease !important;
+}
+.hp-icon-btn:hover {
+    background: var(--hp-surface-2) !important;
+    color: var(--hp-text) !important;
+    border-color: var(--hp-border-strong) !important;
+}
+.hp-icon-btn:focus-visible {
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(79, 157, 255, 0.35) !important;
+}
+.hp-icon-btn:disabled { opacity: 0.5 !important; cursor: default !important; }
+
+.hp-dot {
+    width: 7px !important;
+    height: 7px !important;
+    background-color: var(--hp-danger) !important;
+    border-radius: 50% !important;
+    box-shadow: 0 0 0 3px rgba(229, 83, 75, 0.15) !important;
+    transition: background-color 150ms ease, box-shadow 150ms ease !important;
+}
+.hp-dot.connected {
+    background-color: var(--hp-success) !important;
+    box-shadow: 0 0 0 3px rgba(47, 179, 92, 0.16) !important;
+}
+
+.hp-input {
+    background: var(--hp-surface-2) !important;
+    border: 1px solid var(--hp-border) !important;
+    color: var(--hp-text) !important;
+    padding: 10px 12px !important;
+    border-radius: var(--hp-radius-sm) !important;
+    width: 100% !important;
+    font-size: 13px !important;
+    font-family: inherit !important;
+    transition: border-color 150ms ease, box-shadow 150ms ease !important;
+}
+.hp-input::placeholder { color: var(--hp-text-muted) !important; }
+.hp-input:hover { border-color: var(--hp-border-strong) !important; }
+.hp-input:focus {
+    border-color: var(--hp-accent) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(79, 157, 255, 0.22) !important;
+}
+
+/* NOT: display buraya kasıtlı olarak !important OLMADAN yazıldı — content.js
+   bağlandıktan sonra bu alanı loginArea.style.display = 'none' (satır içi,
+   !important'sız) ile gizliyor. Satır içi stil, !important'sız bir harici
+   kuralı her zaman ezer; bu yüzden !important eklenirse gizleme bozulurdu. */
+#hp-login-area {
+    display: flex;
+    flex-direction: column !important;
+    gap: 10px !important;
+}
+/* content.js'teki eski satır-içi margin-bottom:10px stilini yeni gap düzenine göre etkisizleştirir */
+#hp-login-area .hp-input { margin-bottom: 0 !important; }
+
+.hp-btn {
+    background: var(--hp-accent) !important;
+    color: var(--hp-accent-contrast) !important;
+    border: none !important;
+    padding: 10px 14px !important;
+    border-radius: var(--hp-radius-sm) !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    font-family: inherit !important;
+    cursor: pointer !important;
+    width: 100% !important;
+    box-shadow: var(--hp-shadow-sm) !important;
+    transition: background-color 150ms ease, transform 100ms ease, box-shadow 150ms ease, opacity 150ms ease !important;
+}
+.hp-btn:hover { background: var(--hp-accent-hover) !important; }
+.hp-btn:active { background: var(--hp-accent-active) !important; transform: translateY(1px) !important; }
+.hp-btn:focus-visible {
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(79, 157, 255, 0.35) !important;
+}
+.hp-btn:disabled { opacity: 0.6 !important; cursor: default !important; transform: none !important; }
+
+#hp-chat-area {
+    display: none;
+    flex-direction: column !important;
+    flex-grow: 1 !important;
+    min-height: 0 !important; /* iç içe flex kolonlarda taşma/scroll'un doğru çalışması için şart */
+    gap: 10px !important;
+}
+
+/* hp-status'un yanında ayrı bir kutu olarak gösterilir (bkz. content.js
+   showConnectedUI/hp-header-right); bağlanmadan önce "hidden" olduğu için
+   gizli, ReceiveUserCount ile dolunca görünür olur. Artık bir <button> —
+   tıklanınca hp-user-list-popover'ı açıp odadakilerin listesini gösteriyor. */
+#hp-user-count {
+    font: inherit !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    color: var(--hp-text-muted) !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: 999px !important;
+    padding: 4px 10px !important;
+    flex-shrink: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    cursor: pointer !important;
+    transition: background-color 150ms ease, border-color 150ms ease !important;
+}
+#hp-user-count:hover {
+    background: var(--hp-surface-2) !important;
+    border-color: var(--hp-border-strong) !important;
+}
+#hp-user-count[hidden] {
+    display: none !important;
+}
+
+/* Kişi listesi popover'ı: header'ın hemen altında, sağa yaslı küçük bir kart. */
+#hp-user-list-popover {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+    position: absolute !important;
+    top: 52px !important;
+    right: 16px !important;
+    min-width: 160px !important;
+    max-width: 240px !important;
+    max-height: 220px !important;
+    overflow-y: auto !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border-strong) !important;
+    border-radius: var(--hp-radius-md) !important;
+    padding: 10px !important;
+    box-shadow: var(--hp-shadow-md) !important;
+    z-index: 100000 !important;
+}
+#hp-user-list-popover[hidden] {
+    display: none !important;
+}
+#hp-user-list-title {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    color: var(--hp-text-muted) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.4px !important;
+}
+#hp-user-list {
+    list-style: none !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 4px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+#hp-user-list li {
+    font-size: 12.5px !important;
+    color: var(--hp-text) !important;
+    padding: 4px 6px !important;
+    border-radius: var(--hp-radius-sm) !important;
+    background: var(--hp-surface-2) !important;
+}
+#hp-user-list li.hp-user-list-self {
+    color: var(--hp-accent) !important;
+    font-weight: 600 !important;
+}
+
+/* Ayarlar simgesi diğer ikon butonlara göre bir tık büyük */
+#hp-settings-btn {
+    font-size: 15px !important;
+}
+
+/* Sesli sohbete katılınca "Ayrıl" durumu (bkz. content.js voiceToggleBtn.dataset.inVoice)
+   mikrofon ikonu nötr renkten kırmızıya döner. */
+#hp-voice-toggle-btn[data-in-voice="true"] {
+    background: rgba(229, 83, 75, 0.14) !important;
+    color: var(--hp-danger) !important;
+}
+#hp-voice-toggle-btn[data-in-voice="true"]:hover {
+    background: rgba(229, 83, 75, 0.22) !important;
+    color: var(--hp-danger-hover) !important;
+}
+
+/* Görsel olarak kaldırıldı — istek üzerine. NOT: bu, JS'in okuduğu
+   pttBtn.style.display (inline stil) değerini DEĞİŞTİRMEZ, sadece ekrandaki
+   görünümü ezer; bu yüzden "V" tuşuyla bas-konuş mantığı (content.js
+   setupVoiceUI, pttBtn.style.display === 'none' kontrolü) etkilenmeden
+   aynen çalışmaya devam ediyor. */
+#hp-ptt-btn { display: none !important; }
+
+.hp-ptt-btn {
+    background: transparent !important;
+    color: var(--hp-text) !important;
+    border: 1px dashed var(--hp-border-strong) !important;
+    user-select: none !important;
+    box-shadow: none !important;
+}
+.hp-ptt-btn:hover { background: var(--hp-surface-2) !important; border-color: var(--hp-text-muted) !important; }
+.hp-ptt-btn.active {
+    background: rgba(47, 179, 92, 0.16) !important;
+    color: var(--hp-success-strong) !important;
+    border: 1px solid var(--hp-success) !important;
+}
+
+#hp-messages {
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-md) !important;
+    padding: 12px !important;
+    flex: 1 1 auto !important; /* sabit max-height yerine kalan tüm boşluğu doldur, input'u en alta iter */
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    font-size: 13px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+}
+#hp-messages::-webkit-scrollbar { width: 8px !important; }
+#hp-messages::-webkit-scrollbar-track { background: transparent !important; }
+#hp-messages::-webkit-scrollbar-thumb {
+    background-color: var(--hp-border-strong) !important;
+    border-radius: 999px !important;
+}
+
+.hp-msg {
+    padding: 8px 12px !important;
+    border-radius: var(--hp-radius-md) !important;
+    width: fit-content !important;
+    max-width: 88% !important;
+    word-break: break-word !important;
+    font-size: var(--hp-msg-font-size, 13px) !important; /* bkz. content.js hp-msg-font-size-group */
+}
+.hp-msg.system {
+    align-self: center !important;
+    color: var(--hp-text-muted) !important;
+    font-style: normal !important;
+    font-size: 10.5px !important;
+    letter-spacing: 0.2px !important;
+    text-align: center !important;
+    width: auto !important;
+    max-width: 92% !important;
+    background: var(--hp-surface-2) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: 999px !important;
+    padding: 4px 12px !important;
+}
+.hp-msg.self {
+    background: var(--hp-accent) !important;
+    color: var(--hp-accent-contrast) !important;
+    align-self: flex-end !important;
+    border-radius: var(--hp-radius-md) var(--hp-radius-md) 4px var(--hp-radius-md) !important;
+}
+.hp-msg.other {
+    background: var(--hp-surface-2) !important;
+    color: var(--hp-text) !important;
+    align-self: flex-start !important;
+    border-radius: var(--hp-radius-md) var(--hp-radius-md) var(--hp-radius-md) 4px !important;
+}
+.hp-sender {
+    font-size: 10.5px !important;
+    font-weight: 700 !important;
+    color: var(--hp-accent) !important;
+    margin-bottom: 3px !important;
+}
+.hp-msg.self .hp-sender { color: rgba(11, 18, 32, 0.75) !important; }
+
+/* "X yazıyor..." baloncuğu (bkz. content.js renderTypingIndicator) — normal
+   bir "other" mesaj baloncuğu gibi ama içinde zıplayan üç noktalı animasyon. */
+.hp-typing-bubble {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    font-style: italic !important;
+    font-size: 12px !important;
+    color: var(--hp-text-muted) !important;
+}
+.hp-typing-dots {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 3px !important;
+}
+.hp-typing-dots span {
+    width: 4px !important;
+    height: 4px !important;
+    border-radius: 50% !important;
+    background: var(--hp-text-muted) !important;
+    animation: hp-typing-bounce 1.2s infinite ease-in-out !important;
+}
+.hp-typing-dots span:nth-child(2) { animation-delay: 0.15s !important; }
+.hp-typing-dots span:nth-child(3) { animation-delay: 0.3s !important; }
+@keyframes hp-typing-bounce {
+    0%, 60%, 100% { transform: translateY(0); opacity: 0.5; }
+    30% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* MESAJ YAZMA ALANI (composer): tek bir kart içinde üstte input, altında
+   sol tarafta sesli sohbet ikonu, sağ tarafta emoji + gönder ikonları —
+   modern sohbet uygulamalarındaki (Discord vb.) kompakt yazma çubuğu. */
+#hp-composer {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 6px !important;
+    flex-shrink: 0 !important;
+    background: var(--hp-surface-2) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-md) !important;
+    padding: 10px 12px !important;
+    transition: border-color 150ms ease, box-shadow 150ms ease !important;
+}
+#hp-composer:focus-within {
+    border-color: var(--hp-accent) !important;
+    box-shadow: 0 0 0 3px rgba(79, 157, 255, 0.18) !important;
+}
+
+.hp-composer-input {
+    background: transparent !important;
+    border: none !important;
+    color: var(--hp-text) !important;
+    padding: 2px 0 !important;
+    font-size: 13.5px !important;
+    font-family: inherit !important;
+    width: 100% !important;
+}
+.hp-composer-input::placeholder { color: var(--hp-text-muted) !important; }
+.hp-composer-input:focus { outline: none !important; }
+
+#hp-composer-toolbar {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+#hp-composer-toolbar-left,
+#hp-composer-toolbar-right {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+}
+
+.hp-composer-icon {
+    width: 28px !important;
+    height: 28px !important;
+    font-size: 15px !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--hp-text-muted) !important;
+}
+.hp-composer-icon:hover { background: var(--hp-surface) !important; color: var(--hp-text) !important; }
+
+/* Gönder ikonu, birincil eylem olduğu için vurgu rengiyle öne çıkar */
+.hp-send-icon {
+    background: var(--hp-accent) !important;
+    color: var(--hp-accent-contrast) !important;
+    border-radius: 50% !important;
+}
+.hp-send-icon:hover { background: var(--hp-accent-hover) !important; color: var(--hp-accent-contrast) !important; }
+
+/* Emoji seçici: mesaj kutusunun hemen üstünde, normal akışta açılır/kapanır
+   (mesaj listesi bir miktar küçülür) — ekstra konumlandırma/z-index karmaşası
+   olmasın diye absolute positioning kullanılmadı. Arama + kategori sekmeleri +
+   kaydırılabilir emoji listesi olmak üzere 3 bölümden oluşur. */
+#hp-emoji-picker {
+    display: flex;
+    flex-direction: column !important;
+    gap: 8px !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-md) !important;
+    padding: 8px !important;
+    flex-shrink: 0 !important;
+}
+#hp-emoji-picker[hidden] { display: none !important; }
+
+#hp-emoji-search-row { flex-shrink: 0 !important; }
+#hp-emoji-search { padding: 8px 10px !important; font-size: 12.5px !important; }
+
+#hp-emoji-tabs {
+    display: flex !important;
+    gap: 2px !important;
+    flex-shrink: 0 !important;
+    border-bottom: 1px solid var(--hp-border) !important;
+    padding-bottom: 6px !important;
+    overflow-x: auto !important;
+}
+.hp-emoji-tab {
+    flex-shrink: 0 !important;
+    background: transparent !important;
+    border: none !important;
+    border-radius: var(--hp-radius-sm) !important;
+    font-size: 16px !important;
+    line-height: 1 !important;
+    padding: 5px 7px !important;
+    cursor: pointer !important;
+    opacity: 0.55 !important;
+    transition: opacity 120ms ease, background-color 120ms ease !important;
+}
+.hp-emoji-tab:hover { opacity: 0.85 !important; background: var(--hp-surface-2) !important; }
+.hp-emoji-tab.active { opacity: 1 !important; background: var(--hp-surface-2) !important; }
+
+#hp-emoji-body {
+    max-height: 170px !important;
+    overflow-y: auto !important;
+}
+.hp-emoji-section-title {
+    font-size: 10.5px !important;
+    font-weight: 600 !important;
+    color: var(--hp-text-muted) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.3px !important;
+    padding: 2px 2px 6px !important;
+}
+.hp-emoji-empty {
+    font-size: 12px !important;
+    color: var(--hp-text-muted) !important;
+    text-align: center !important;
+    padding: 16px 4px !important;
+}
+.hp-emoji-grid {
+    display: grid !important;
+    grid-template-columns: repeat(7, 1fr) !important;
+    gap: 2px !important;
+}
+.hp-emoji-option {
+    background: transparent !important;
+    border: none !important;
+    border-radius: var(--hp-radius-sm) !important;
+    font-size: 18px !important;
+    line-height: 1.4 !important;
+    padding: 4px !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    width: auto !important;
+    transition: background-color 120ms ease !important;
+}
+.hp-emoji-option:hover { background: var(--hp-surface-2) !important; }
+
+/* ===== Ayarlar paneli =====
+   content.js bunu #hp-login-area/#hp-chat-area ile AYNI gövde alanında,
+   [hidden] attribute'u üzerinden açıp kapatıyor (openSettingsPanel/
+   closeSettingsPanel) — başlık/durum/oda bilgisi her zaman görünür kaldığı
+   için kullanıcı sohbetten kopmuş hissetmiyor, sadece gövde içeriği değişiyor. */
+#hp-settings-panel {
+    display: flex; /* NOT: display'in !important OLMAMASının sebebi #hp-login-area'daki ile aynı: [hidden] override kuralı aşağıda */
+    flex-direction: column !important;
+    flex-grow: 1 !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    gap: 16px !important;
+}
+#hp-settings-panel[hidden] { display: none !important; }
+
+#hp-settings-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    font-weight: 600 !important;
+    font-size: 13px !important;
+    padding-bottom: 10px !important;
+    border-bottom: 1px solid var(--hp-border) !important;
+}
+
+.hp-settings-section {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+}
+
+.hp-settings-label {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    color: var(--hp-text-muted) !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.4px !important;
+}
+
+/* Normal Mod / Bas-Konuş Modu seçimi: tek parça, iki bölmeli "segmented control" */
+.hp-segmented {
+    display: flex !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    padding: 3px !important;
+    gap: 3px !important;
+}
+.hp-segmented-option {
+    flex: 1 1 0 !important;
+    background: transparent !important;
+    color: var(--hp-text-muted) !important;
+    border: none !important;
+    border-radius: calc(var(--hp-radius-sm) - 3px) !important;
+    padding: 8px 10px !important;
+    font-size: 12.5px !important;
+    font-weight: 600 !important;
+    font-family: inherit !important;
+    cursor: pointer !important;
+    transition: background-color 150ms ease, color 150ms ease !important;
+}
+.hp-segmented-option:hover { color: var(--hp-text) !important; }
+.hp-segmented-option.selected {
+    background: var(--hp-accent) !important;
+    color: var(--hp-accent-contrast) !important;
+}
+
+.hp-key-capture-btn {
+    background: var(--hp-surface-2) !important;
+    color: var(--hp-text) !important;
+    border: 1px solid var(--hp-border) !important;
+    box-shadow: none !important;
+    font-weight: 500 !important;
+}
+.hp-key-capture-btn:hover { border-color: var(--hp-border-strong) !important; background: var(--hp-surface-2) !important; }
+.hp-key-capture-btn #hp-ptt-key-label {
+    font-weight: 700 !important;
+    color: var(--hp-accent) !important;
+}
+
+/* Bildirim sesi açma/kapama anahtarı (bkz. content.js hp-sound-toggle-btn) */
+.hp-toggle-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 10px !important;
+    background: var(--hp-surface-2) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    color: var(--hp-text) !important;
+    font: inherit !important;
+    font-size: 12.5px !important;
+    font-weight: 500 !important;
+    padding: 10px 12px !important;
+    cursor: pointer !important;
+    width: 100% !important;
+    text-align: left !important;
+    box-shadow: none !important;
+    transition: border-color 150ms ease !important;
+}
+.hp-toggle-row:hover { border-color: var(--hp-border-strong) !important; }
+.hp-toggle-switch {
+    position: relative !important;
+    flex-shrink: 0 !important;
+    width: 34px !important;
+    height: 20px !important;
+    border-radius: 999px !important;
+    background: var(--hp-bg) !important;
+    border: 1px solid var(--hp-border-strong) !important;
+    transition: background-color 150ms ease, border-color 150ms ease !important;
+}
+.hp-toggle-switch::after {
+    content: "" !important;
+    position: absolute !important;
+    top: 2px !important;
+    left: 2px !important;
+    width: 14px !important;
+    height: 14px !important;
+    border-radius: 50% !important;
+    background: var(--hp-text-muted) !important;
+    transition: transform 150ms ease, background-color 150ms ease !important;
+}
+.hp-toggle-switch.on {
+    background: var(--hp-accent) !important;
+    border-color: var(--hp-accent) !important;
+}
+.hp-toggle-switch.on::after {
+    transform: translateX(14px) !important;
+    background: var(--hp-accent-contrast) !important;
+}
+.hp-key-capture-btn.listening {
+    border-color: var(--hp-accent) !important;
+    box-shadow: 0 0 0 3px rgba(79, 157, 255, 0.22) !important;
+}
+
+/* ===== Responsive: dar pencerelerde panel biraz daralsın =====
+   hp-size-small/large sınıfları ID+class oldukları için normalde plain
+   #hb-party-panel'den daha spesifik olur; dar pencerede boyut tercihinin bu
+   daralmayı ezmemesi için üç selector'ı da (varsayılan + small + large)
+   burada birlikte hedefliyoruz. */
+@media (max-width: 1400px) {
+    #hb-party-panel,
+    #hb-party-panel.hp-size-small,
+    #hb-party-panel.hp-size-large {
+        flex: 0 0 320px !important;
+        width: 320px !important;
+        padding: 12px !important;
+    }
+}
