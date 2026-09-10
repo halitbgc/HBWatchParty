@@ -5,7 +5,9 @@
 // devam eder. background.js bu dokümana sadece kontrol mesajları
 // (VOICE_JOIN/VOICE_LEAVE/VOICE_PTT_START/VOICE_PTT_STOP) iletir.
 
-const voiceHubUrl = "https://hbwatch.arztakvim.com.tr/voicehub";
+// BACKEND_BASE_URL, auth.js'ten geliyor (bu dosyadan önce voice-offscreen.html
+// içinde yükleniyor) — hem watch-party hem voice hub aynı backend'i kullanıyor.
+const voiceHubUrl = `${BACKEND_BASE_URL}/voicehub`;
 const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
 
 // NOISE GATE AYARLARI: "V" basılıyken bile konuşma araları/oda gürültüsü
@@ -283,10 +285,38 @@ function setMicEnabled(enabled) {
     }
 }
 
+// Bu offscreen document içinden chrome.storage.local'a DOĞRUDAN erişim
+// güvenilmez çıktı (teşhis: typeof chrome.storage === "undefined" dönüyor —
+// chrome.runtime mesajlaşması sorunsuz çalışırken chrome.storage bu ortamda
+// bağlanmıyor, muhtemelen chrome.offscreen dokümanlarına özgü bir Chrome
+// tuhaflığı). Bu yüzden token'ı HER ZAMAN background.js'ten (normal bir
+// service worker — storage erişimi sorunsuz) istiyoruz; hem ilk katılımda
+// hem SignalR'ın accessTokenFactory'yi her çağırışında (bkz. joinVoice altı).
+function requestTokenFromBackground() {
+    return new Promise((resolve) => {
+        try {
+            chrome.runtime.sendMessage({ target: "background", action: "AUTH_GET_TOKEN" }, (response) => {
+                resolve(response?.token || null);
+            });
+        } catch (e) {
+            resolve(null);
+        }
+    });
+}
+
 async function joinVoice(room, user) {
     if (currentRoom === room && currentUser === user && connection?.state === signalR.HubConnectionState.Connected) {
         return { success: true }; // zaten bu odada bağlıyız
     }
+
+    // /voicehub artık [Authorize] — geçerli bir token yoksa mikrofon izni
+    // istemeye bile gerek yok, negotiate zaten 401 ile reddedecek.
+    const token = await requestTokenFromBackground();
+    if (!token) {
+        console.error("HB WatchParty (voice): VOICE_JOIN reddedildi — background.js'ten geçerli bir token alınamadı.");
+        return { success: false, authRequired: true, error: "Oturumun sona ermiş. Sesli sohbete katılmak için tekrar giriş yap." };
+    }
+
     if (connection) {
         await leaveVoice();
     }
@@ -334,7 +364,7 @@ async function joinVoice(room, user) {
     // yüzden görüyordu. withAutomaticReconnect + onreconnected ile odaya
     // otomatik yeniden katılıyoruz.
     connection = new signalR.HubConnectionBuilder()
-        .withUrl(voiceHubUrl)
+        .withUrl(voiceHubUrl, { accessTokenFactory: () => requestTokenFromBackground() })
         .withAutomaticReconnect({
             nextRetryDelayInMilliseconds: (retryContext) => {
                 if (retryContext.previousRetryCount === 0) return 0;
@@ -412,9 +442,13 @@ async function joinVoice(room, user) {
         await connection.invoke("JoinVoiceRoom", currentRoom, currentUser);
         return { success: true };
     } catch (err) {
+        const detail = String(err?.message || err);
         console.error("HB WatchParty (voice): sinyalleşme bağlantısı kurulamadı", err);
         await leaveVoice();
-        return { success: false, error: "Sesli sohbet sunucusuna bağlanılamadı." };
+        if (hbIsAuthError(err)) {
+            return { success: false, authRequired: true, error: "Oturumun sona ermiş. Sesli sohbete katılmak için tekrar giriş yap.", detail };
+        }
+        return { success: false, error: "Sesli sohbet sunucusuna bağlanılamadı.", detail };
     }
 }
 

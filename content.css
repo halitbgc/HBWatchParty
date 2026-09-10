@@ -221,6 +221,83 @@
 /* content.js'teki eski satır-içi margin-bottom:10px stilini yeni gap düzenine göre etkisizleştirir */
 #hp-login-area .hp-input { margin-bottom: 0 !important; }
 
+/* Login/Kayıt formu (#hp-auth-area) ve oda kodu formu (#hp-room-area) —
+   ikisi de #hp-login-area'nın içinde, auth durumuna göre biri hidden (bkz.
+   content.js showAuthArea/showRoomArea). */
+#hp-auth-area,
+#hp-room-area {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+}
+#hp-auth-area[hidden],
+#hp-room-area[hidden] {
+    display: none !important;
+}
+
+.hp-auth-info {
+    font-size: 11.5px !important;
+    color: var(--hp-text-muted) !important;
+    background: var(--hp-surface) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    padding: 8px 10px !important;
+    text-align: center !important;
+}
+.hp-auth-info[hidden] { display: none !important; }
+
+.hp-auth-error {
+    font-size: 11.5px !important;
+    color: var(--hp-danger) !important;
+    background: rgba(229, 83, 75, 0.12) !important;
+    border: 1px solid var(--hp-danger) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    padding: 8px 10px !important;
+}
+.hp-auth-error[hidden] { display: none !important; }
+
+/* Giriş yapılan hesabın adını gösteren sade satır — hem oda formunda hem
+   ayarlar panelindeki "Hesap" bölümünde kullanılıyor. */
+.hp-account-row {
+    display: flex !important;
+    align-items: center !important;
+    background: var(--hp-surface-2) !important;
+    border: 1px solid var(--hp-border) !important;
+    border-radius: var(--hp-radius-sm) !important;
+    padding: 10px 12px !important;
+    font-size: 12.5px !important;
+    color: var(--hp-text) !important;
+}
+
+.hp-btn-danger {
+    background: transparent !important;
+    color: var(--hp-danger) !important;
+    border: 1px solid var(--hp-danger) !important;
+    box-shadow: none !important;
+}
+.hp-btn-danger:hover { background: rgba(229, 83, 75, 0.14) !important; color: var(--hp-danger-hover) !important; }
+
+/* "Oda Oluştur" / "Odaya Katıl" arasındaki "veya" ayraç çizgisi (bkz.
+   content.js #hp-room-area). ::before/::after pseudo-elementleri flex akışında
+   birer öge sayıldığı için metin aradaki tek gerçek child gibi ortalanıyor. */
+.hp-room-divider {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    color: var(--hp-text-muted) !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.4px !important;
+}
+.hp-room-divider::before,
+.hp-room-divider::after {
+    content: "" !important;
+    flex: 1 1 auto !important;
+    height: 1px !important;
+    background: var(--hp-border) !important;
+}
+
 .hp-btn {
     background: var(--hp-accent) !important;
     color: var(--hp-accent-contrast) !important;

@@ -1,3 +1,14 @@
+// auth.js'i (hbGetValidToken vb.) burada da kullanılabilir kılar — service
+// worker'lar classic script olduğu için importScripts ile senkron yükleniyor.
+// SEBEP: voice-offscreen.js'in KENDİ içinden chrome.storage.local'a erişmesi
+// bu ortamda güvenilmez çıktı (teşhis: offscreen document içinde
+// typeof chrome.storage === "undefined" dönüyor, muhtemelen chrome.offscreen
+// dokümanlarına özgü bir Chrome tuhaflığı) — bu yüzden token okuma işini
+// tamamen buraya (her zaman güvenilir çalışan normal bir service worker
+// context'i) taşıdık; offscreen document artık token'ı AUTH_GET_TOKEN
+// mesajıyla buradan istiyor (bkz. voice-offscreen.js requestTokenFromBackground).
+importScripts('auth.js');
+
 chrome.action.onClicked.addListener((tab) => {
     if (tab.url && tab.url.includes("youtube.com/watch")) {
         chrome.tabs.sendMessage(tab.id, { action: "TOGGLE_PANEL" })
@@ -81,6 +92,16 @@ async function sendToOffscreen(message) {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.target !== "background") return false;
+
+    // voice-offscreen.js'in chrome.storage.local'a KENDİ içinden erişmek
+    // yerine token'ı buradan istemesi için (bkz. importScripts yorumu).
+    if (message.action === "AUTH_GET_TOKEN") {
+        (async () => {
+            const token = await hbGetValidToken();
+            sendResponse({ token });
+        })();
+        return true;
+    }
 
     if (message.action === "VOICE_JOIN") {
         const tabId = sender.tab?.id;

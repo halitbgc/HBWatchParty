@@ -4,7 +4,7 @@
   "version": "1.0",
   "description": "YouTube Watch Party ve Sohbet Eklentisi",
   "permissions": ["offscreen", "storage"],
-  "host_permissions": ["*://*.youtube.com/*"],
+  "host_permissions": ["*://*.youtube.com/*", "https://hbwatch.arztakvim.com.tr/*"],
   "background": {
     "service_worker": "background.js"
   },
@@ -26,7 +26,7 @@
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/watch*"],
-      "js": ["signalr.min.js", "content.js"],
+      "js": ["signalr.min.js", "auth.js", "content.js"],
       "css": ["content.css"]
     },
     {

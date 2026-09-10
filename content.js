@@ -1,9 +1,13 @@
-// const hubUrl = "https://localhost:7070/watchpartyhub";
-const hubUrl = "https://hbwatch.arztakvim.com.tr/watchpartyhub";
+// BACKEND_BASE_URL, hbGetStoredAuth/hbIsAuthValid/hbGetValidToken/hbAuthRequest/
+// hbIsAuthError auth.js'ten geliyor — manifest.json'da bu dosyadan önce, aynı
+// (isolated world) content script bağlamına yükleniyor, bu yüzden ayrıca
+// import etmeye gerek yok.
+const hubUrl = `${BACKEND_BASE_URL}/watchpartyhub`;
 
 let connection = null;
 let currentRoom = "";
-let currentUser = "";
+let currentUser = ""; // artık serbest metin değil — her zaman giriş yapılan hesabın username'i (bkz. connectToRoom)
+let pendingRejoinRoom = null; // login sonrası tekrar doldurulacak oda kodu (bkz. tryAutoRejoin/showRoomArea)
 let videoElement = null;
 let roomUsers = []; // ReceiveUserList ile dolan, odadaki kullanıcı adları (hp-user-count popover'ı bundan besleniyor)
 let isPanelOpen = false; // Kullanıcının panelin açık olmasını istediği bilgisi (DOM'dan bağımsız, kalıcı)
@@ -177,9 +181,28 @@ function ensurePanelExists(alertIfMissing = false) {
         </div>
 
         <div id="hp-login-area">
-            <input type="text" id="hp-username" class="hp-input" placeholder="Adınız (Örn: Halit)" style="margin-bottom: 10px;">
-            <input type="text" id="hp-roomname" class="hp-input" placeholder="Oda Kodu (Örn: Oda123)" style="margin-bottom: 10px;">
-            <button id="hp-connect-btn" class="hp-btn">Odaya Katıl</button>
+            <div id="hp-auth-area">
+                <div id="hp-auth-info" class="hp-auth-info" hidden></div>
+                <div class="hp-segmented" id="hp-auth-mode-group">
+                    <button type="button" class="hp-segmented-option" data-auth-mode="login">Giriş Yap</button>
+                    <button type="button" class="hp-segmented-option" data-auth-mode="register">Kayıt Ol</button>
+                </div>
+                <input type="text" id="hp-auth-username" class="hp-input" placeholder="Kullanıcı adı" autocomplete="username">
+                <input type="password" id="hp-auth-password" class="hp-input" placeholder="Şifre" autocomplete="current-password">
+                <div id="hp-auth-error" class="hp-auth-error" hidden></div>
+                <button id="hp-auth-submit-btn" class="hp-btn" type="button">Giriş Yap</button>
+            </div>
+
+            <div id="hp-room-area" hidden>
+                <div id="hp-room-account-row" class="hp-account-row">
+                    <span id="hp-room-account-label"></span>
+                </div>
+                <div id="hp-room-error" class="hp-auth-error" hidden></div>
+                <button id="hp-create-room-btn" class="hp-btn" type="button">Oda Oluştur</button>
+                <div class="hp-room-divider">veya</div>
+                <input type="text" id="hp-roomname" class="hp-input" placeholder="Oda Kodu (Örn: TQWHJO)" maxlength="6" autocomplete="off">
+                <button id="hp-join-room-btn" class="hp-btn" type="button">Odaya Katıl</button>
+            </div>
         </div>
 
         <div id="hp-chat-area">
@@ -220,6 +243,14 @@ function ensurePanelExists(alertIfMissing = false) {
             <div id="hp-settings-header">
                 <span>Ayarlar</span>
                 <button id="hp-settings-close-btn" class="hp-icon-btn" type="button" title="Kapat" aria-label="Kapat">✕</button>
+            </div>
+
+            <div class="hp-settings-section">
+                <div class="hp-settings-label">Hesap</div>
+                <div id="hp-settings-account-row" class="hp-account-row">
+                    <span id="hp-settings-account-username">—</span>
+                </div>
+                <button id="hp-logout-btn" class="hp-btn hp-btn-danger" type="button" hidden>Çıkış Yap</button>
             </div>
 
             <div class="hp-settings-section">
@@ -314,34 +345,60 @@ function showConnectedUI() {
 
 // Sayfa (video değişimi ya da başka bir sebeple) gerçekten yeniden yüklendiğinde
 // bu script sıfırdan çalışır ve connection/currentRoom/currentUser kaybolur.
-// sessionStorage'da kayıtlı bir oturum varsa kullanıcıya login formu göstermek
-// yerine sessizce aynı odaya yeniden bağlanıyoruz.
-function tryAutoRejoin() {
+// sessionStorage'da kayıtlı bir oda oturumu varsa VE hâlâ geçerli bir giriş
+// (token) varsa kullanıcıya login formu göstermek yerine sessizce aynı odaya
+// yeniden bağlanıyoruz. Token yoksa/süresi dolmuşsa (bkz. hbIsAuthValid) oda
+// bilgisini kaybetmeden (pendingRejoinRoom) login ekranını gösteriyoruz.
+async function tryAutoRejoin() {
     if (connection) return;
     let session = null;
     try {
         session = JSON.parse(sessionStorage.getItem(SESSION_STORAGE_KEY));
     } catch (e) { /* yoksay */ }
-    if (!session?.room || !session?.user) return;
 
-    currentUser = session.user;
-    currentRoom = session.room;
-    isPanelOpen = !!session.panelOpen;
+    if (session?.panelOpen) {
+        isPanelOpen = true;
+        const panel = document.getElementById('hb-party-panel');
+        if (panel) panel.style.display = 'flex';
+        nudgePlayerResize();
+    }
 
-    const panel = document.getElementById('hb-party-panel');
-    if (panel) panel.style.display = isPanelOpen ? 'flex' : 'none';
-    nudgePlayerResize();
+    const auth = await hbGetStoredAuth();
+    if (!hbIsAuthValid(auth)) {
+        pendingRejoinRoom = session?.room || null;
+        showAuthArea(auth ? "Oturumun sona erdi, tekrar giriş yap." : null);
+        return;
+    }
 
-    connectToRoom();
+    showRoomArea(auth.username);
+    if (!session?.room) return;
+
+    const roomInput = document.getElementById('hp-roomname');
+    if (roomInput) roomInput.value = session.room;
+
+    connectToRoom(session.room);
 }
 
 // 3. SIGNALR BAĞLANTISI
-function connectToRoom() {
-    const btnConnect = document.getElementById('hp-connect-btn');
-    if (btnConnect) btnConnect.textContent = "Bağlanıyor...";
+// roomCode: hub'a bağlanılacak oda kodu — ÇAĞIRAN TARAF bu kodun gerçekten var
+// olduğunu (ya da az önce backend tarafından üretildiğini) önceden doğrulamış
+// olmalı (bkz. setupRoomUI: hbCreateRoom/hbCheckRoom). Bu fonksiyon sadece hub
+// bağlantısını kurar, oda kodu doğrulaması yapmaz.
+async function connectToRoom(roomCode) {
+    // /watchpartyhub artık [Authorize] — bağlanmadan önce token'ın gerçekten
+    // geçerli olduğunu kontrol ediyoruz (süresi dolmuşsa sessizce reddedilip
+    // kullanıcıyı şaşırtmak yerine net bir mesajla login ekranına dönüyoruz).
+    const auth = await hbGetStoredAuth();
+    if (!hbIsAuthValid(auth)) {
+        pendingRejoinRoom = roomCode || null;
+        showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
+        return false;
+    }
+    currentUser = auth.username;
+    currentRoom = roomCode;
 
     connection = new signalR.HubConnectionBuilder()
-        .withUrl(hubUrl)
+        .withUrl(hubUrl, { accessTokenFactory: () => hbGetValidToken() })
         .withAutomaticReconnect({
             nextRetryDelayInMilliseconds: (retryContext) => {
                 if (retryContext.previousRetryCount === 0) return 0;
@@ -429,37 +486,36 @@ function connectToRoom() {
         if (el) el.hidden = true;
     });
 
-    return connection.start()
-        .then(() => connection.invoke("JoinRoom", currentRoom, currentUser))
-        .then(() => {
-            showConnectedUI();
-            saveSession();
-            setupVideoListeners(); // panel kapalıyken bağlanılsa (ör. otomatik yeniden katılım) bile video event'leri izlensin
-        })
-        .catch((err) => {
-            console.error("SignalR Hatası:", err);
-            connection = null;
-            if (btnConnect) {
-                alert("Bağlantı kurulamadı. Sunucu açık mı?");
-                btnConnect.textContent = "Odaya Katıl";
-            }
-        });
+    try {
+        await connection.start();
+        await connection.invoke("JoinRoom", currentRoom, currentUser);
+        showConnectedUI();
+        saveSession();
+        setupVideoListeners(); // panel kapalıyken bağlanılsa (ör. otomatik yeniden katılım) bile video event'leri izlensin
+        return true;
+    } catch (err) {
+        console.error("SignalR Hatası:", err);
+        connection = null;
+
+        // Negotiate/start 401 ile reddedildiyse (token yok/geçersiz/süresi
+        // dolmuş) mevcut oda kodunu kaybetmeden temiz bir şekilde login
+        // ekranına dön — aksi halde (ör. sunucu gerçekten kapalıysa) oda
+        // ekranında genel bir hata göster.
+        if (hbIsAuthError(err)) {
+            pendingRejoinRoom = currentRoom || null;
+            await hbClearAuth();
+            showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
+        } else {
+            showRoomError("Bağlantı kurulamadı. Sunucu açık mı?");
+        }
+        return false;
+    }
 }
 
 // 4. BUTONLAR
 function setupUIEvents() {
-    const btnConnect = document.getElementById('hp-connect-btn');
     const btnSend = document.getElementById('hp-send-btn');
     const inputMsg = document.getElementById('hp-msg-input');
-
-    btnConnect.addEventListener('click', () => {
-        currentUser = document.getElementById('hp-username').value.trim();
-        currentRoom = document.getElementById('hp-roomname').value.trim();
-
-        if (!currentUser || !currentRoom) return alert("Lütfen adınızı ve oda kodunu girin.");
-
-        connectToRoom();
-    });
 
     btnSend.addEventListener('click', async () => {
         const text = inputMsg.value.trim();
@@ -493,10 +549,286 @@ function setupUIEvents() {
         connection.invoke("SendTyping", currentRoom, currentUser).catch(() => { /* yoksay — kritik değil */ });
     });
 
+    setupAuthUI();
+    setupRoomUI();
     setupVoiceUI();
     setupSettingsUI();
     setupEmojiPicker();
     setupUserListPopover();
+}
+
+// AUTH (Giriş Yap / Kayıt Ol / Oda Kodu) ARAYÜZÜ: bkz. görev tanımı — backend'e
+// artık kullanıcı hesabı sistemi eklendiği için odaya katılmadan önce bir hesap
+// login'i gerekiyor. #hp-login-area içinde iki alt bölüm var: #hp-auth-area
+// (giriş/kayıt formu) ve #hp-room-area (sadece oda kodu — kullanıcı adı artık
+// serbest metin değil, giriş yapılan hesabın username'i, bkz. connectToRoom).
+function setupAuthUI() {
+    const modeButtons = Array.from(document.querySelectorAll('#hp-auth-mode-group .hp-segmented-option'));
+    const usernameInput = document.getElementById('hp-auth-username');
+    const passwordInput = document.getElementById('hp-auth-password');
+    const errorEl = document.getElementById('hp-auth-error');
+    const submitBtn = document.getElementById('hp-auth-submit-btn');
+    if (!modeButtons.length || !usernameInput || !passwordInput || !errorEl || !submitBtn) return;
+
+    let authMode = 'login';
+
+    function setError(message) {
+        if (!message) { errorEl.hidden = true; errorEl.textContent = ''; return; }
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+    }
+
+    function applyAuthModeUI() {
+        modeButtons.forEach(btn => btn.classList.toggle('selected', btn.dataset.authMode === authMode));
+        submitBtn.textContent = authMode === 'login' ? 'Giriş Yap' : 'Kayıt Ol';
+        setError(null);
+    }
+
+    modeButtons.forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (btn.dataset.authMode === authMode) return;
+            authMode = btn.dataset.authMode;
+            applyAuthModeUI();
+        });
+    });
+
+    async function submitAuth() {
+        const username = usernameInput.value.trim();
+        const password = passwordInput.value;
+        setError(null);
+
+        if (username.length < 3 || username.length > 64) return setError("Kullanıcı adı 3-64 karakter olmalı.");
+        if (password.length < 8) return setError("Şifre en az 8 karakter olmalı.");
+
+        submitBtn.disabled = true;
+        submitBtn.textContent = authMode === 'login' ? "Giriş yapılıyor..." : "Kayıt olunuyor...";
+
+        const path = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+        const result = await hbAuthRequest(path, username, password);
+
+        submitBtn.disabled = false;
+        applyAuthModeUI();
+
+        if (!result.ok) return setError(result.error);
+
+        await hbSaveAuth(result.data);
+        usernameInput.value = '';
+        passwordInput.value = '';
+        showRoomArea(result.data.username);
+        updateSettingsAccountSection();
+    }
+
+    submitBtn.addEventListener('click', submitAuth);
+    [usernameInput, passwordInput].forEach(input => {
+        input.addEventListener('keypress', (e) => { if (e.key === 'Enter') submitAuth(); });
+    });
+
+    applyAuthModeUI();
+}
+
+// ODA OLUŞTUR / ODAYA KATIL REST İSTEMCİSİ: backend'de artık oda kodu
+// kullanıcı tarafından seçilemiyor — /api/rooms [Authorize] korumalı, ya yeni
+// bir kod üretiyor (POST) ya da girilen kodun var olup olmadığını doğruluyor
+// (GET /api/rooms/{code}). İkisi de aynı hata deseniyle (401/404/400) dönüyor,
+// bu yüzden tek bir ortak istemci fonksiyonu yeterli.
+async function hbRoomApiRequest(path, method) {
+    const token = await hbGetValidToken();
+    if (!token) return { ok: false, authRequired: true, error: "Oturumun sona erdi, tekrar giriş yap." };
+
+    try {
+        const res = await fetch(`${BACKEND_BASE_URL}${path}`, {
+            method,
+            headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) return { ok: true, data: await res.json() };
+        if (res.status === 401) return { ok: false, authRequired: true, error: "Oturumun sona erdi, tekrar giriş yap." };
+        if (res.status === 404) return { ok: false, error: "Bu kodla bir oda bulunamadı, kodu kontrol edin." };
+        if (res.status === 400) return { ok: false, error: "Geçersiz oda kodu formatı." };
+        return { ok: false, error: "Sunucuya bağlanılamadı." };
+    } catch (e) {
+        return { ok: false, error: "Sunucuya bağlanılamadı." };
+    }
+}
+
+function hbCreateRoom() {
+    return hbRoomApiRequest('/api/rooms', 'POST');
+}
+
+function hbCheckRoom(code) {
+    return hbRoomApiRequest(`/api/rooms/${encodeURIComponent(code)}`, 'GET');
+}
+
+function showRoomError(message) {
+    const errorEl = document.getElementById('hp-room-error');
+    if (!errorEl) return;
+    if (!message) { errorEl.hidden = true; errorEl.textContent = ''; return; }
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+}
+
+// "Oda Oluştur" (kod backend'den geliyor, kullanıcı hiçbir şey yazmıyor) ve
+// "Odaya Katıl" (kullanıcı kodu yazar, hub'a bağlanmadan ÖNCE GET ile var
+// olduğu doğrulanır) akışlarını yönetir. Doğrulama/oluşturma başarılı olunca
+// mevcut connectToRoom(roomCode) ile hub bağlantısı kurulur — hub tarafında
+// (JoinRoom ve sonrası) hiçbir değişiklik yok.
+function setupRoomUI() {
+    const createBtn = document.getElementById('hp-create-room-btn');
+    const joinBtn = document.getElementById('hp-join-room-btn');
+    const roomInput = document.getElementById('hp-roomname');
+    if (!createBtn || !joinBtn || !roomInput) return;
+
+    // Sadece A-Z/0-9 kabul et, otomatik büyük harfe çevir, en fazla 6 karakter
+    // (bkz. backend roomCode formatı) — backend zaten doğruluyor ama önden
+    // engellemek daha iyi UX.
+    roomInput.addEventListener('input', () => {
+        const cleaned = roomInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+        if (cleaned !== roomInput.value) roomInput.value = cleaned;
+    });
+
+    async function handleAuthRequiredOrError(result) {
+        if (result.authRequired) {
+            await hbClearAuth();
+            showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
+        } else {
+            showRoomError(result.error);
+        }
+    }
+
+    createBtn.addEventListener('click', async () => {
+        showRoomError(null);
+        createBtn.disabled = true;
+        joinBtn.disabled = true;
+        const originalText = createBtn.textContent;
+        createBtn.textContent = "Oluşturuluyor...";
+
+        const result = await hbCreateRoom();
+        if (!result.ok) {
+            await handleAuthRequiredOrError(result);
+        } else {
+            createBtn.textContent = "Bağlanıyor...";
+            await connectToRoom(result.data.roomCode);
+        }
+
+        createBtn.disabled = false;
+        joinBtn.disabled = false;
+        createBtn.textContent = originalText;
+    });
+
+    async function submitJoin() {
+        const code = roomInput.value.trim().toUpperCase();
+        showRoomError(null);
+        if (code.length !== 6) return showRoomError("Oda kodu 6 karakter olmalı.");
+
+        joinBtn.disabled = true;
+        createBtn.disabled = true;
+        const originalText = joinBtn.textContent;
+        joinBtn.textContent = "Kontrol ediliyor...";
+
+        const result = await hbCheckRoom(code);
+        if (!result.ok) {
+            await handleAuthRequiredOrError(result);
+        } else {
+            joinBtn.textContent = "Bağlanıyor...";
+            await connectToRoom(result.data.roomCode);
+        }
+
+        joinBtn.disabled = false;
+        createBtn.disabled = false;
+        joinBtn.textContent = originalText;
+    }
+
+    joinBtn.addEventListener('click', submitJoin);
+    roomInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') submitJoin(); });
+}
+
+// Login/Kayıt formunu gösterir (oda alanı gizlenir). infoMessage verilirse
+// (ör. "Oturumun sona erdi, tekrar giriş yap.") formun üstünde bir bilgi
+// kutusu olarak gösterilir — session'ı sessizce kaybetmiş gibi göstermemek için.
+function showAuthArea(infoMessage) {
+    const loginArea = document.getElementById('hp-login-area');
+    const chatArea = document.getElementById('hp-chat-area');
+    const authArea = document.getElementById('hp-auth-area');
+    const roomArea = document.getElementById('hp-room-area');
+    const infoEl = document.getElementById('hp-auth-info');
+    if (!loginArea || !authArea || !roomArea) return;
+
+    if (chatArea) chatArea.style.display = 'none';
+    loginArea.style.display = 'flex';
+    authArea.hidden = false;
+    roomArea.hidden = true;
+
+    if (infoEl) {
+        if (infoMessage) { infoEl.textContent = infoMessage; infoEl.hidden = false; }
+        else { infoEl.hidden = true; infoEl.textContent = ''; }
+    }
+
+    document.getElementById('hp-dot')?.classList.remove('connected');
+    const roomText = document.getElementById('hp-room-text');
+    if (roomText) roomText.textContent = 'Bağlanmadı';
+}
+
+// Giriş yapılmış ama henüz bir odaya bağlanılmamış durumda gösterilen ekran
+// (sadece oda kodu girilir). pendingRejoinRoom doluysa (ör. token süresi
+// dolduğu için login'e düşülmüş, kullanıcı tekrar giriş yaptı) oda kodunu
+// otomatik doldurur ama OTOMATİK BAĞLANMAZ — kullanıcı "Odaya Katıl"a basmalı.
+function showRoomArea(username) {
+    const loginArea = document.getElementById('hp-login-area');
+    const chatArea = document.getElementById('hp-chat-area');
+    const authArea = document.getElementById('hp-auth-area');
+    const roomArea = document.getElementById('hp-room-area');
+    if (!loginArea || !authArea || !roomArea) return;
+
+    if (chatArea) chatArea.style.display = 'none';
+    loginArea.style.display = 'flex';
+    authArea.hidden = true;
+    roomArea.hidden = false;
+    showRoomError(null);
+
+    const accountLabel = document.getElementById('hp-room-account-label');
+    if (accountLabel) accountLabel.textContent = `${username} olarak giriş yaptın`;
+
+    if (pendingRejoinRoom) {
+        const roomInput = document.getElementById('hp-roomname');
+        if (roomInput && !roomInput.value) roomInput.value = pendingRejoinRoom;
+        pendingRejoinRoom = null;
+    }
+}
+
+// Ayarlar panelindeki "Hesap" bölümünü (kullanıcı adı + Çıkış Yap butonu)
+// güncel auth durumuna göre tazeler — panel her açıldığında çağrılır.
+async function updateSettingsAccountSection() {
+    const usernameEl = document.getElementById('hp-settings-account-username');
+    const logoutBtn = document.getElementById('hp-logout-btn');
+    if (!usernameEl || !logoutBtn) return;
+    const auth = await hbGetStoredAuth();
+    if (hbIsAuthValid(auth)) {
+        usernameEl.textContent = `${auth.username} olarak giriş yaptın`;
+        logoutBtn.hidden = false;
+    } else {
+        usernameEl.textContent = "Giriş yapılmadı";
+        logoutBtn.hidden = true;
+    }
+}
+
+// ÇIKIŞ YAP: aktif oda bağlantısını ve sesli sohbeti temiz bir şekilde
+// kapatır, sessionStorage'daki oda oturumunu ve chrome.storage'daki token'ı
+// temizler, ardından login ekranına döner. Sesli sohbet offscreen document'te
+// yaşadığı için (bkz. background.js) burada da açıkça VOICE_LEAVE gönderiliyor.
+async function handleLogout() {
+    try { await chrome.runtime.sendMessage({ target: "background", action: "VOICE_LEAVE" }); } catch (e) { /* yoksay */ }
+
+    if (connection) {
+        try { await connection.stop(); } catch (e) { /* yoksay */ }
+        connection = null;
+    }
+
+    try { sessionStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* yoksay */ }
+    currentRoom = "";
+    currentUser = "";
+    roomUsers = [];
+
+    await hbClearAuth();
+    await closeSettingsPanel();
 }
 
 // EMOJİ VERİSİ: [emoji, kategori, arama anahtar kelimeleri] üçlüleri.
@@ -834,17 +1166,23 @@ function openSettingsPanel() {
     settingsPanel.hidden = false;
 }
 
-function closeSettingsPanel() {
+async function closeSettingsPanel() {
     const settingsPanel = document.getElementById('hp-settings-panel');
     if (settingsPanel) settingsPanel.hidden = true;
 
     if (connection?.state === signalR.HubConnectionState.Connected) {
         showConnectedUI();
+        return;
+    }
+
+    // Bağlı değilsek login/oda ekranından hangisinin gösterileceği artık
+    // GERÇEK auth durumuna bağlı (bkz. showAuthArea/showRoomArea) — ör. Çıkış
+    // Yap az önce token'ı temizlediyse burada login formuna düşülmeli.
+    const auth = await hbGetStoredAuth();
+    if (hbIsAuthValid(auth)) {
+        showRoomArea(auth.username);
     } else {
-        const loginArea = document.getElementById('hp-login-area');
-        const chatArea = document.getElementById('hp-chat-area');
-        if (chatArea) chatArea.style.display = 'none';
-        if (loginArea) loginArea.style.display = 'flex';
+        showAuthArea();
     }
 }
 
@@ -868,10 +1206,15 @@ function setupSettingsUI() {
     const soundToggleBtn = document.getElementById('hp-sound-toggle-btn');
     const themeButtons = Array.from(document.querySelectorAll('#hp-theme-group .hp-segmented-option'));
     const fontSizeButtons = Array.from(document.querySelectorAll('#hp-msg-font-size-group .hp-segmented-option'));
+    const logoutBtn = document.getElementById('hp-logout-btn');
     if (!settingsBtn || !closeBtn || !keyCaptureBtn || !keyLabel || !soundToggleBtn) return;
 
-    settingsBtn.addEventListener('click', openSettingsPanel);
+    settingsBtn.addEventListener('click', () => {
+        openSettingsPanel();
+        updateSettingsAccountSection();
+    });
     closeBtn.addEventListener('click', closeSettingsPanel);
+    if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
 
     function applyModeSelectionUI() {
         modeButtons.forEach(btn => btn.classList.toggle('selected', btn.dataset.mode === voiceMode));
@@ -1039,6 +1382,7 @@ function setupVoiceUI() {
             voiceToggleBtn.textContent = "⏳";
             voiceToggleBtn.title = "Bağlanıyor...";
             const result = await chrome.runtime.sendMessage({ target: "background", action: "VOICE_JOIN", room: currentRoom, user: currentUser });
+            if (!result?.success) console.error("HB WatchParty (voice): VOICE_JOIN başarısız", result);
             if (result?.success) {
                 setVoiceUIState(true);
                 // Normal Mod'da bas-konuş tuşuna gerek yok: mikrofon katılır
@@ -1047,6 +1391,10 @@ function setupVoiceUI() {
                 if (voiceMode === 'normal') {
                     chrome.runtime.sendMessage({ target: "background", action: "VOICE_PTT_START" });
                 }
+            } else if (result?.authRequired) {
+                await hbClearAuth();
+                showAuthArea(result?.error || "Oturumun sona erdi, tekrar giriş yap.");
+                setVoiceUIState(false);
             } else {
                 alert(result?.error || "Sesli sohbete katılınamadı.");
                 setVoiceUIState(false);
