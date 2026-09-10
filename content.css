@@ -278,6 +278,23 @@
     display: none !important;
 }
 
+/* Senkron uyarı rozeti (bkz. content.js renderSyncWarning). Sadece fark
+   eşiği aşıldığında görünür, chat'i spam'lemeden sessizce belirir/kaybolur. */
+#hp-sync-warning {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    color: var(--hp-danger) !important;
+    background: rgba(229, 83, 75, 0.14) !important;
+    border: 1px solid var(--hp-danger) !important;
+    border-radius: 999px !important;
+    padding: 4px 10px !important;
+    flex-shrink: 0 !important;
+    white-space: nowrap !important;
+}
+#hp-sync-warning[hidden] {
+    display: none !important;
+}
+
 /* Kişi listesi popover'ı: header'ın hemen altında, sağa yaslı küçük bir kart. */
 #hp-user-list-popover {
     display: flex !important;

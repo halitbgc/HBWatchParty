@@ -35,6 +35,12 @@ let lastTypingSentAt = 0;
 const TYPING_THROTTLE_MS = 2000; // yazarken en fazla bu sıklıkta sinyal gönder
 const TYPING_EXPIRE_MS = 3000;   // bu süre yeni sinyal gelmezse "yazıyor" listesinden düş
 
+// SENKRON KONTROLÜ: artık sunucu-merkezli — istemci hiçbir zamanlayıcı/
+// karşılaştırma yapmıyor. Sunucu (PlaybackSyncBackgroundService) periyodik
+// olarak "RequestPlaybackTime" ile soruyor, biz sadece cevap veriyoruz;
+// karşılaştırmayı (en büyük - en küçük fark) sunucu yapıp sonucu
+// ReceiveSyncWarning/ReceiveSyncOk ile bildiriyor.
+
 // KÖK NEDEN: videoElement.currentTime = x atamak ile play()/pause() çağırmak
 // tarayıcıda AYRI ZAMANLARDA event doğurur ('seeked' asenkron gelir, 'play'/
 // 'pause' hemen gelir). Eskiden tek bir isExternalEvent bayrağı vardı ve "ilk
@@ -58,29 +64,17 @@ function consumeSuppressedVideoEvent(type) {
     return suppressedVideoEvents.delete(type);
 }
 
-// VİDEO DEĞİŞTİRME: referans olarak incelenen köklü bir watch-party
-// eklentisinin (Teleparty) kendi kodunda da görüldüğü gibi (bkz. ornek.js
-// window.location.href !== t ? window.location.href = t : window.location.reload()),
-// YouTube'un thumbnail/router iç yapısını taklit etmeye çalışmak (sahte click,
-// pushState+popstate, .data property vb.) sürekli kırılan, güvenilmez bir
-// yaklaşımdı — YouTube arayüzü değiştikçe (ör. yeni thumbnail bileşenleri)
-// bu hackler sessizce bozuluyordu. GERÇEK ÇÖZÜM: basitçe GERÇEK bir sayfa
-// navigasyonu yapmak (window.location.href = ...). Bu, video/başlık/açıklama/
-// yorumlar/öneriler dahil HER ŞEYİN doğru güncellenmesini garanti eder çünkü
-// gerçek bir YouTube sayfa yüklemesidir. Bunun tek bedeli content script'in
-// (ve onunla birlikte SignalR bağlantısının) sıfırlanması; bu da aşağıdaki
-// sessionStorage tabanlı oturum kalıcılığı ile (bkz. saveSession/tryAutoRejoin)
-// telafi ediliyor — sayfa yeniden yüklenince odaya otomatik ve sessizce
-// yeniden katılınıyor, kullanıcı hiçbir şey fark etmiyor.
-// chrome.storage.local yerine bilerek sessionStorage kullanılıyor:
-// chrome.storage tüm sekmeler ve tarayıcı oturumları arasında KALICI ve
-// PAYLAŞIMLI olduğu için kullanıcı partiden tamamen ayrılıp haftalar sonra
-// alakasız bir YouTube videosu açsa bile sessizce eski odaya otomatik
-// bağlanırdı. sessionStorage ise tam istediğimiz kapsamda: bu SEKME içinde
-// navigasyonlar arası hayatta kalır (aynı origin'de kaldığı sürece) ama sekme
+// OTURUM KALICILIĞI: panel açık/kapalı bilgisi ve son oda/kullanıcı bilgisi,
+// sayfa gerçekten yeniden yüklenirse (ör. kullanıcının kendi F5'i) content
+// script'in odaya sessizce otomatik yeniden katılabilmesi için sessionStorage'da
+// tutuluyor (bkz. tryAutoRejoin). chrome.storage.local yerine bilerek
+// sessionStorage kullanılıyor: chrome.storage tüm sekmeler ve tarayıcı
+// oturumları arasında KALICI ve PAYLAŞIMLI olduğu için kullanıcı partiden
+// tamamen ayrılıp haftalar sonra alakasız bir YouTube videosu açsa bile
+// sessizce eski odaya otomatik bağlanırdı. sessionStorage ise tam istediğimiz
+// kapsamda: bu SEKME içinde navigasyonlar arası hayatta kalır ama sekme
 // kapanınca kendiliğinden temizlenir.
 const SESSION_STORAGE_KEY = "hbWatchPartySession";
-const SUPPRESS_NEXT_LOAD_KEY = "hbSuppressNextVideoEvents";
 
 function saveSession() {
     if (!currentRoom || !currentUser) return;
@@ -89,31 +83,29 @@ function saveSession() {
     } catch (e) { /* yoksay */ }
 }
 
-function changeVideoWithReload(videoId) {
+// VİDEO DEĞİŞTİRME: sayfa HİÇ yeniden yüklenmiyor. Chrome extension content
+// script'leri "isolated world"da çalışıyor — DOM'u sayfayla paylaşır ama
+// YouTube'un kendi script'lerinin #movie_player'a eklediği GERÇEK Player API
+// metodları (loadVideoById vb.) sadece sayfanın kendi JS ortamından ("MAIN
+// world") görünüyor. Çözüm: page-bridge.js adında, manifest.json'da
+// "world":"MAIN" ile kayıtlı ayrı bir script MAIN world'de çalışıyor; biz ona
+// bir CustomEvent ile videoId gönderiyoruz, o da gerçek player'a erişip
+// videoyu (ve başlığı) değiştiriyor. Açıklama/yorumlar bölümü bu yöntemle
+// güncellenmiyor (YouTube'un sayfa router'ı hiç tetiklenmediği için) — bu
+// bilinen ve kabul edilen bir sınırlama.
+function changeVideoInPlace(videoId) {
     const current = new URL(window.location.href);
     if (current.searchParams.get('v') === videoId) return; // zaten bu videodayız
 
-    saveSession(); // reload sonrası odaya otomatik geri dönebilmek için
-    // Reload sonrası yeni videonun otomatik play'i (ve olası bir resume-seek'i)
-    // KULLANICININ bizzat yaptığı bir hareket sanılıp sunucuya echo gitmesin.
-    // Bu bayrak sessionStorage'da tutuluyor çünkü aşağıdaki in-memory
-    // suppressedVideoEvents Set'i reload ile birlikte sıfırlanıyor.
-    try { sessionStorage.setItem(SUPPRESS_NEXT_LOAD_KEY, "1"); } catch (e) { /* yoksay */ }
+    // Yeni videonun otomatik oynatması KULLANICININ bizzat yaptığı bir hareket
+    // sanılıp sunucuya echo gitmesin diye kısa süreliğine bastırılıyor.
+    suppressVideoEvent('play', 5000);
+    suppressVideoEvent('pause', 5000);
+    suppressVideoEvent('seeked', 5000);
 
-    window.location.href = `https://www.youtube.com/watch?v=${videoId}`;
+    lastVideoId = videoId;
+    window.dispatchEvent(new CustomEvent('hb-watchparty-change-video', { detail: { videoId } }));
 }
-
-(function consumeSuppressFlagFromPreviousLoad() {
-    try {
-        if (sessionStorage.getItem(SUPPRESS_NEXT_LOAD_KEY) === "1") {
-            sessionStorage.removeItem(SUPPRESS_NEXT_LOAD_KEY);
-            // Video yüklenip autoplay/resume-seek tetiklenene kadar geniş bir pay bırak.
-            suppressVideoEvent('play', 10000);
-            suppressVideoEvent('seeked', 10000);
-            suppressVideoEvent('pause', 10000);
-        }
-    } catch (e) { /* yoksay */ }
-})();
 
 // 1. İKONA TIKLANDIĞINDA ÇALIŞAN DİNLEYİCİ
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -173,6 +165,7 @@ function ensurePanelExists(alertIfMissing = false) {
             <span><img id="hp-logo" src="${chrome.runtime.getURL('icons/icon48.png')}" alt="">Watch Party</span>
             <span id="hp-header-right">
                 <span id="hp-status"><div class="hp-dot" id="hp-dot"></div> <span id="hp-room-text">Bağlanmadı</span></span>
+                <span id="hp-sync-warning" title="Videonuz diğer katılımcılarla senkron değil" hidden>⚠️ Senkron değil</span>
                 <button id="hp-user-count" type="button" hidden></button>
                 <button id="hp-settings-btn" class="hp-icon-btn" type="button" title="Ayarlar" aria-label="Ayarlar">⚙️</button>
             </span>
@@ -400,7 +393,7 @@ function connectToRoom() {
     });
 
     connection.on("ReceiveChangeVideo", (newVideoId) => {
-        changeVideoWithReload(newVideoId);
+        changeVideoInPlace(newVideoId);
     });
 
     connection.on("ReceiveUserCount", (count) => {
@@ -413,6 +406,27 @@ function connectToRoom() {
     connection.on("ReceiveUserList", (users) => {
         roomUsers = Array.isArray(users) ? users : [];
         renderUserList();
+    });
+
+    // Sunucu (PlaybackSyncBackgroundService) periyodik olarak soruyor, biz
+    // sadece o anki oynatma zamanımızla cevap veriyoruz. Video yoksa/duraklatılmışsa
+    // da gerçek zamanı gönderiyoruz — karşılaştırmayı sunucu yapıyor. Kullanıcı
+    // TAM O AN videoyu sarıyorsa (videoElement.seeking) hiç cevap vermiyoruz —
+    // sarma bitene kadar geçici/gürültülü bir değer o turun karşılaştırmasına
+    // hiç karışmasın diye.
+    connection.on("RequestPlaybackTime", () => {
+        if (!videoElement || videoElement.seeking) return;
+        connection.invoke("ReportPlaybackTime", currentRoom, videoElement.currentTime, currentUser).catch(() => { /* yoksay */ });
+    });
+
+    connection.on("ReceiveSyncWarning", () => {
+        const el = document.getElementById('hp-sync-warning');
+        if (el) el.hidden = false;
+    });
+
+    connection.on("ReceiveSyncOk", () => {
+        const el = document.getElementById('hp-sync-warning');
+        if (el) el.hidden = true;
     });
 
     return connection.start()
@@ -1267,10 +1281,13 @@ let lastVideoId = new URL(window.location.href).searchParams.get("v");
 
 // YouTube'un kendi içindeki sayfa/video geçişlerini yakalama (kullanıcının
 // bizzat başka bir videoya tıklamasıyla oluşan GERÇEK SPA navigasyonları).
-// Bizim kendi tetiklediğimiz uzak video değişimi artık tam sayfa reload
-// olduğu için (changeVideoWithReload), o durumda bu script sıfırdan
-// yüklenir ve lastVideoId zaten yeni videoya eşit başlar — dolayısıyla
-// aşağıdaki blok tekrar sunucuya bildirim göndermez, ekstra bir bayrağa gerek yok.
+// Bizim kendi tetiklediğimiz uzak video değişimi (changeVideoInPlace)
+// YouTube'un router'ını hiç kullanmadığı (sadece page-bridge.js üzerinden
+// #movie_player.loadVideoById çağırdığı) için bu event'i tetiklemez —
+// dolayısıyla aşağıdaki blok sadece kullanıcının kendi elleriyle yaptığı
+// navigasyonlarda çalışır. changeVideoInPlace yine de lastVideoId'yi güncel
+// tutar ki kullanıcı GERÇEKTEN başka bir videoya geçtiğinde karşılaştırma
+// doğru çalışsın.
 document.addEventListener('yt-navigate-finish', () => {
     // Video id değişsin değişmesin HER navigasyonda çalışır: YouTube bu sırada
     // player'ın etrafındaki DOM'u yeniden çizip panelimizi silmiş olabilir.

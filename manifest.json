@@ -28,6 +28,12 @@
       "matches": ["*://*.youtube.com/watch*"],
       "js": ["signalr.min.js", "content.js"],
       "css": ["content.css"]
+    },
+    {
+      "matches": ["*://*.youtube.com/watch*"],
+      "js": ["page-bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
