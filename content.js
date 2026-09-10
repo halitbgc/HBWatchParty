@@ -170,7 +170,7 @@ function ensurePanelExists(alertIfMissing = false) {
     panel.id = 'hb-party-panel';
     panel.innerHTML = `
         <div id="hp-header">
-            <span>HB Watch Party</span>
+            <span><img id="hp-logo" src="${chrome.runtime.getURL('icons/icon48.png')}" alt="">Watch Party</span>
             <span id="hp-header-right">
                 <span id="hp-status"><div class="hp-dot" id="hp-dot"></div> <span id="hp-room-text">Bağlanmadı</span></span>
                 <button id="hp-user-count" type="button" hidden></button>

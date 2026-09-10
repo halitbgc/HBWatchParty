@@ -116,19 +116,18 @@
     letter-spacing: 0.1px !important;
 }
 
-/* Başlığın önüne, DOM'a dokunmadan sade bir marka vurgusu */
+/* Başlığın önünde marka logosu */
 #hp-header span:first-child {
     display: flex !important;
     align-items: center !important;
     gap: 8px !important;
 }
-#hp-header span:first-child::before {
-    content: "" !important;
-    display: inline-block !important;
-    width: 8px !important;
-    height: 8px !important;
-    border-radius: 2px !important;
-    background: var(--hp-accent) !important;
+#hp-logo {
+    width: 20px !important;
+    height: 20px !important;
+    object-fit: contain !important;
+    flex-shrink: 0 !important;
+    display: block !important;
 }
 
 #hp-header-right {
