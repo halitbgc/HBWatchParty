@@ -6,10 +6,23 @@ const hubUrl = `${BACKEND_BASE_URL}/watchpartyhub`;
 
 let connection = null;
 let currentRoom = "";
-let currentUser = ""; // artık serbest metin değil — her zaman giriş yapılan hesabın username'i (bkz. connectToRoom)
+let currentUser = ""; // artık serbest metin değil — her zaman giriş yapılan hesabın GÖRÜNEN ADI (displayName), hesap username'i DEĞİL (bkz. connectToRoom) — sadece EKRANDA gösterilir (ör. kendi mesajının başlığı), artık hiçbir yerde adresleme/eşleştirme için kullanılmıyor
+let currentUserId = ""; // hesap bazında BENZERSİZ ve SABİT userId — hub event'lerinde "bu bana mı ait" karşılaştırması ve sesli sohbet peer eşleştirmesi ARTIK BUNUNLA yapılıyor, displayName ile değil (görünen ad benzersiz olmak zorunda değil)
 let pendingRejoinRoom = null; // login sonrası tekrar doldurulacak oda kodu (bkz. tryAutoRejoin/showRoomArea)
 let videoElement = null;
-let roomUsers = []; // ReceiveUserList ile dolan, odadaki kullanıcı adları (hp-user-count popover'ı bundan besleniyor)
+let roomUsers = []; // ReceiveUserList ile dolan, odadaki katılımcılar — {userId, displayName} objeleri (hp-user-count popover'ı bundan besleniyor)
+
+// userId -> displayName ÖNBELLEĞİ. ReceiveChatMessage/ReceiveTyping artık
+// displayName TAŞIMIYOR (sadece userId) — backend bu bilgiyi ayrı olarak
+// ReceiveUserList (tam liste, katılım/ayrılmada) ve ReceiveDisplayNameChanged
+// (biri adını değiştirdiğinde, tek bir push) ile gönderiyor. İsim değişince
+// artık HİÇBİR bağlantının kapanıp yeniden kurulmasına gerek yok — backend
+// odadaki herkese (adını değiştiren dahil) bu event'i canlı yayınlıyor, biz
+// sadece önbelleği güncelliyoruz.
+const displayNameCache = new Map();
+function resolveDisplayName(userId) {
+    return displayNameCache.get(userId) || "Bilinmeyen kullanıcı";
+}
 let isPanelOpen = false; // Kullanıcının panelin açık olmasını istediği bilgisi (DOM'dan bağımsız, kalıcı)
 
 // SESLİ SOHBET AYARLARI (Normal Mod / Bas-Konuş Modu + bas-konuş tuşu).
@@ -34,7 +47,7 @@ let messageFontSize = 13; // 9 | 11 | 13 | 15 | 17
 // TYPING_EXPIRE_MS'lik bir sayaç kurar/sıfırlar; süre içinde yeni sinyal
 // gelmezse o kullanıcı otomatik olarak listeden düşer. Bu, karşı taraf
 // sekmeyi aniden kapatsa bile göstergenin asılı kalmamasını sağlıyor.
-let typingUsers = new Map(); // username -> setTimeout id
+let typingUsers = new Map(); // userId -> { timeoutId, displayName } — anahtar userId (benzersiz), displayName sadece göstergede yazı olarak kullanılır
 let lastTypingSentAt = 0;
 const TYPING_THROTTLE_MS = 2000; // yazarken en fazla bu sıklıkta sinyal gönder
 const TYPING_EXPIRE_MS = 3000;   // bu süre yeni sinyal gelmezse "yazıyor" listesinden düş
@@ -254,6 +267,13 @@ function ensurePanelExists(alertIfMissing = false) {
             </div>
 
             <div class="hp-settings-section">
+                <div class="hp-settings-label">Görünen Ad</div>
+                <input type="text" id="hp-display-name-input" class="hp-input" placeholder="Görünen adın" maxlength="20" autocomplete="off">
+                <div id="hp-display-name-error" class="hp-auth-error" hidden></div>
+                <button id="hp-display-name-save-btn" class="hp-btn" type="button">Kaydet</button>
+            </div>
+
+            <div class="hp-settings-section">
                 <div class="hp-settings-label">Sesli Sohbet Modu</div>
                 <div class="hp-segmented" id="hp-voice-mode-group">
                     <button type="button" class="hp-segmented-option" data-mode="ptt">Bas-Konuş Modu</button>
@@ -394,7 +414,8 @@ async function connectToRoom(roomCode) {
         showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
         return false;
     }
-    currentUser = auth.username;
+    currentUser = auth.displayName || auth.username;
+    currentUserId = auth.userId;
     currentRoom = roomCode;
 
     connection = new signalR.HubConnectionBuilder()
@@ -412,17 +433,21 @@ async function connectToRoom(roomCode) {
     connection.on("ReceiveSystemMessage", msg => appendMessage(msg, 'system'));
     // Kendi mesajımız zaten gönderirken optimistic olarak ekrana eklendiği için
     // (bkz. btnSend click handler'ı) sunucudan geri gelen kendi echo'muzu
-    // yoksayıyoruz — aksi halde aynı mesaj iki kez görünürdü.
-    connection.on("ReceiveChatMessage", (user, msg) => {
-        if (user === currentUser) return;
-        clearTyping(user);
-        appendMessage(msg, 'other', user);
+    // yoksayıyoruz — aksi halde aynı mesaj iki kez görünürdü. Karşılaştırma
+    // userId ile yapılıyor (displayName ile DEĞİL — aynı görünen ada sahip
+    // başka biri varsa displayName karşılaştırması yanlış sonuç verirdi).
+    // Event artık displayName TAŞIMIYOR (sadece userId, msg) — isim
+    // displayNameCache'ten çözülüyor (bkz. ReceiveUserList/ReceiveDisplayNameChanged).
+    connection.on("ReceiveChatMessage", (userId, msg) => {
+        if (userId === currentUserId) return;
+        clearTyping(userId);
+        appendMessage(msg, 'other', resolveDisplayName(userId));
         playNotificationSound();
     });
 
-    connection.on("ReceiveTyping", (user) => {
-        if (user === currentUser) return;
-        registerTyping(user);
+    connection.on("ReceiveTyping", (userId) => {
+        if (userId === currentUserId) return;
+        registerTyping(userId, resolveDisplayName(userId));
     });
 
     connection.on("ReceivePlay", (time) => {
@@ -460,9 +485,29 @@ async function connectToRoom(roomCode) {
         el.hidden = false;
     });
 
-    connection.on("ReceiveUserList", (users) => {
-        roomUsers = Array.isArray(users) ? users : [];
+    connection.on("ReceiveUserList", (participants) => {
+        // participants: [{ userId, displayName }, ...] — düz string listesi DEĞİL.
+        // Bu, displayNameCache'in ANA doldurma kaynağı (tam liste, katılım/
+        // ayrılmada gelir) — ReceiveChatMessage/ReceiveTyping'in artık taşımadığı
+        // ismi buradan çözüyoruz.
+        roomUsers = Array.isArray(participants) ? participants : [];
+        roomUsers.forEach(({ userId, displayName }) => displayNameCache.set(userId, displayName));
         renderUserList();
+    });
+
+    // Biri (adını değiştiren kullanıcı dahil) görünen adını değiştirdiğinde
+    // backend odadaki HERKESE bunu canlı yayınlıyor — artık ne yeni bir token
+    // ne de bağlantının yeniden kurulması gerekiyor (bkz. handleSaveDisplayName,
+    // eski "connection.stop()+yeniden bağlan" mantığı kaldırıldı).
+    connection.on("ReceiveDisplayNameChanged", (userId, newDisplayName) => {
+        displayNameCache.set(userId, newDisplayName);
+        const entry = roomUsers.find(p => p.userId === userId);
+        if (entry) entry.displayName = newDisplayName;
+        renderUserList(); // popover açıksa yeni adı anında yansıt
+
+        // Kendi adımız değiştiyse (ör. başka bir sekmeden değiştirilmişse)
+        // optimistic self-mesaj etiketimizi de güncelleyelim.
+        if (userId === currentUserId) currentUser = newDisplayName;
     });
 
     // Sunucu (PlaybackSyncBackgroundService) periyodik olarak soruyor, biz
@@ -473,7 +518,7 @@ async function connectToRoom(roomCode) {
     // hiç karışmasın diye.
     connection.on("RequestPlaybackTime", () => {
         if (!videoElement || videoElement.seeking) return;
-        connection.invoke("ReportPlaybackTime", currentRoom, videoElement.currentTime, currentUser).catch(() => { /* yoksay */ });
+        connection.invoke("ReportPlaybackTime", currentRoom, videoElement.currentTime).catch(() => { /* yoksay */ });
     });
 
     connection.on("ReceiveSyncWarning", () => {
@@ -488,7 +533,7 @@ async function connectToRoom(roomCode) {
 
     try {
         await connection.start();
-        await connection.invoke("JoinRoom", currentRoom, currentUser);
+        await connection.invoke("JoinRoom", currentRoom);
         showConnectedUI();
         saveSession();
         setupVideoListeners(); // panel kapalıyken bağlanılsa (ör. otomatik yeniden katılım) bile video event'leri izlensin
@@ -527,7 +572,7 @@ function setupUIEvents() {
         inputMsg.value = "";
 
         try {
-            await connection.invoke("SendChatMessage", currentRoom, currentUser, text);
+            await connection.invoke("SendChatMessage", currentRoom, text);
         } catch (err) {
             console.error("HB WatchParty: mesaj gönderilemedi", err);
         }
@@ -546,7 +591,7 @@ function setupUIEvents() {
         const now = Date.now();
         if (now - lastTypingSentAt < TYPING_THROTTLE_MS) return;
         lastTypingSentAt = now;
-        connection.invoke("SendTyping", currentRoom, currentUser).catch(() => { /* yoksay — kritik değil */ });
+        connection.invoke("SendTyping", currentRoom).catch(() => { /* yoksay — kritik değil */ });
     });
 
     setupAuthUI();
@@ -794,20 +839,103 @@ function showRoomArea(username) {
     }
 }
 
-// Ayarlar panelindeki "Hesap" bölümünü (kullanıcı adı + Çıkış Yap butonu)
-// güncel auth durumuna göre tazeler — panel her açıldığında çağrılır.
+// Ayarlar panelindeki "Hesap" (kullanıcı adı + Çıkış Yap) ve "Görünen Ad"
+// (input'un mevcut değeri) bölümlerini güncel auth durumuna göre tazeler —
+// panel her açıldığında çağrılır.
 async function updateSettingsAccountSection() {
     const usernameEl = document.getElementById('hp-settings-account-username');
     const logoutBtn = document.getElementById('hp-logout-btn');
+    const displayNameInput = document.getElementById('hp-display-name-input');
+    const displayNameSaveBtn = document.getElementById('hp-display-name-save-btn');
     if (!usernameEl || !logoutBtn) return;
     const auth = await hbGetStoredAuth();
     if (hbIsAuthValid(auth)) {
         usernameEl.textContent = `${auth.username} olarak giriş yaptın`;
         logoutBtn.hidden = false;
+        if (displayNameInput) { displayNameInput.disabled = false; displayNameInput.value = auth.displayName || auth.username; }
+        if (displayNameSaveBtn) displayNameSaveBtn.disabled = false;
+        setDisplayNameError(null);
     } else {
         usernameEl.textContent = "Giriş yapılmadı";
         logoutBtn.hidden = true;
+        if (displayNameInput) { displayNameInput.disabled = true; displayNameInput.value = ''; }
+        if (displayNameSaveBtn) displayNameSaveBtn.disabled = true;
     }
+}
+
+function setDisplayNameError(message) {
+    const errorEl = document.getElementById('hp-display-name-error');
+    if (!errorEl) return;
+    if (!message) { errorEl.hidden = true; errorEl.textContent = ''; return; }
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+}
+
+// GÖRÜNEN ADI KAYDET: backend artık displayName'i JWT'ye hiç gömmüyor — token
+// DEĞİŞMİYOR, bu yüzden burada token saklamaya ya da hub bağlantısını yeniden
+// kurmaya GEREK YOK (eski mimaride vardı, backend değişikliğiyle kaldırıldı).
+// Odadaki/sesli sohbetteki herkese (biz dahil) yeni adı backend zaten
+// ReceiveDisplayNameChanged/VoicePeerDisplayNameChanged event'leriyle canlı
+// yayınlıyor — biz sadece storage'daki displayName alanını (sonraki panel
+// açılışlarında input'u doğru doldurmak için) ve in-memory currentUser'ı
+// güncelleyip kısa bir onay gösteriyoruz.
+async function handleSaveDisplayName() {
+    const input = document.getElementById('hp-display-name-input');
+    const saveBtn = document.getElementById('hp-display-name-save-btn');
+    if (!input || !saveBtn) return;
+
+    const displayName = input.value.trim();
+    setDisplayNameError(null);
+    if (!displayName) return setDisplayNameError("Görünen ad boş olamaz.");
+    if (displayName.length > 20) return setDisplayNameError("Görünen ad en fazla 20 karakter olabilir.");
+
+    const token = await hbGetValidToken();
+    if (!token) {
+        await hbClearAuth();
+        showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
+        return;
+    }
+
+    saveBtn.disabled = true;
+    const originalText = saveBtn.textContent;
+    saveBtn.textContent = "Kaydediliyor...";
+
+    try {
+        const res = await fetch(`${BACKEND_BASE_URL}/api/users/display-name`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ displayName })
+        });
+
+        if (res.ok) {
+            // Yanıt artık sadece { userId, displayName } — token/expiresAtUtc/
+            // username YOK. Storage'daki auth objesinin geri kalanına
+            // dokunmadan sadece displayName alanını güncelliyoruz (blind
+            // overwrite yaparsak token'ı silmiş oluruz).
+            const data = await res.json();
+            const existingAuth = await hbGetStoredAuth();
+            if (existingAuth) await hbSaveAuth({ ...existingAuth, displayName: data.displayName });
+            input.value = data.displayName;
+            currentUser = data.displayName; // bağlıysak/değilsek fark etmeden anında güncelle
+
+            saveBtn.textContent = "Kaydedildi ✓";
+            setTimeout(() => { saveBtn.textContent = originalText; }, 1500);
+            saveBtn.disabled = false;
+            return;
+        } else if (res.status === 401) {
+            await hbClearAuth();
+            showAuthArea("Oturumun sona erdi, tekrar giriş yap.");
+        } else if (res.status === 400) {
+            setDisplayNameError("Görünen ad boş olamaz ya da 20 karakterden uzun olamaz.");
+        } else {
+            setDisplayNameError("Sunucuya bağlanılamadı.");
+        }
+    } catch (e) {
+        setDisplayNameError("Sunucuya bağlanılamadı.");
+    }
+
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalText;
 }
 
 // ÇIKIŞ YAP: aktif oda bağlantısını ve sesli sohbeti temiz bir şekilde
@@ -825,6 +953,7 @@ async function handleLogout() {
     try { sessionStorage.removeItem(SESSION_STORAGE_KEY); } catch (e) { /* yoksay */ }
     currentRoom = "";
     currentUser = "";
+    currentUserId = "";
     roomUsers = [];
 
     await hbClearAuth();
@@ -1127,10 +1256,14 @@ function renderUserList() {
     const list = document.getElementById('hp-user-list');
     if (!list) return;
     list.innerHTML = '';
-    roomUsers.forEach(username => {
+    // roomUsers: [{ userId, displayName }, ...] — "bu ben miyim" karşılaştırması
+    // userId ile yapılıyor (displayName benzersiz değil, aynı adlı iki katılımcı
+    // olabilir — ikisi de ayrı satır olarak listelenmeli, bkz. görev tanımı).
+    roomUsers.forEach(({ userId, displayName }) => {
         const li = document.createElement('li');
-        li.textContent = username === currentUser ? `${username} (sen)` : username;
-        if (username === currentUser) li.classList.add('hp-user-list-self');
+        const isSelf = userId === currentUserId;
+        li.textContent = isSelf ? `${displayName} (sen)` : displayName;
+        if (isSelf) li.classList.add('hp-user-list-self');
         list.appendChild(li);
     });
 }
@@ -1207,6 +1340,8 @@ function setupSettingsUI() {
     const themeButtons = Array.from(document.querySelectorAll('#hp-theme-group .hp-segmented-option'));
     const fontSizeButtons = Array.from(document.querySelectorAll('#hp-msg-font-size-group .hp-segmented-option'));
     const logoutBtn = document.getElementById('hp-logout-btn');
+    const displayNameInput = document.getElementById('hp-display-name-input');
+    const displayNameSaveBtn = document.getElementById('hp-display-name-save-btn');
     if (!settingsBtn || !closeBtn || !keyCaptureBtn || !keyLabel || !soundToggleBtn) return;
 
     settingsBtn.addEventListener('click', () => {
@@ -1215,6 +1350,10 @@ function setupSettingsUI() {
     });
     closeBtn.addEventListener('click', closeSettingsPanel);
     if (logoutBtn) logoutBtn.addEventListener('click', handleLogout);
+    if (displayNameSaveBtn) displayNameSaveBtn.addEventListener('click', handleSaveDisplayName);
+    if (displayNameInput) {
+        displayNameInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') handleSaveDisplayName(); });
+    }
 
     function applyModeSelectionUI() {
         modeButtons.forEach(btn => btn.classList.toggle('selected', btn.dataset.mode === voiceMode));
@@ -1381,7 +1520,7 @@ function setupVoiceUI() {
         } else {
             voiceToggleBtn.textContent = "⏳";
             voiceToggleBtn.title = "Bağlanıyor...";
-            const result = await chrome.runtime.sendMessage({ target: "background", action: "VOICE_JOIN", room: currentRoom, user: currentUser });
+            const result = await chrome.runtime.sendMessage({ target: "background", action: "VOICE_JOIN", room: currentRoom, userId: currentUserId });
             if (!result?.success) console.error("HB WatchParty (voice): VOICE_JOIN başarısız", result);
             if (result?.success) {
                 setVoiceUIState(true);
@@ -1432,16 +1571,19 @@ function setupVoiceUI() {
         return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
     }
 
-    // Ayarlar paneli açıkken (ör. yeni tuş belirlerken) eski tuşun burada da
-    // tetiklenmemesi için kontrol ediliyor.
-    function isSettingsPanelOpen() {
-        const settingsPanel = document.getElementById('hp-settings-panel');
-        return !!settingsPanel && !settingsPanel.hidden;
+    // SADECE "yeni tuş belirle" butonuna basılıp gerçekten yeni bir tuş
+    // bekleniyorken (bkz. setupSettingsUI'daki keyCaptureBtn 'listening' class'ı)
+    // eski PTT tuşunun burada da tetiklenmesini engelliyoruz. Önceden bunun
+    // yerine "Ayarlar paneli açık mı" diye bakılıyordu — bu da Ayarlar'ı
+    // HERHANGİ bir sebeple (tema, görünen ad vb.) açık tutarken PTT'yi
+    // gereksiz yere tamamen kilitliyordu.
+    function isCapturingPttKey() {
+        return document.getElementById('hp-ptt-key-capture-btn')?.classList.contains('listening') ?? false;
     }
 
     document.addEventListener('keydown', (e) => {
         if (e.code !== pttKeyCode || e.repeat || pttKeyActive) return;
-        if (isTypingInField(e.target) || isSettingsPanelOpen()) return;
+        if (isTypingInField(e.target) || isCapturingPttKey()) return;
         if (pttBtn.style.display === 'none') return; // sesli sohbette değilsek/Bas-Konuş Modu'nda değilsek yoksay
         pttKeyActive = true;
         updatePttState();
@@ -1521,7 +1663,9 @@ function appendMessage(text, type, senderName = "") {
 function renderTypingIndicator() {
     const msgDiv = document.getElementById('hp-messages');
     if (!msgDiv) return;
-    const names = Array.from(typingUsers.keys());
+    // typingUsers artık userId -> { timeoutId, displayName } — göstergede
+    // yazılan isimler value'lardaki displayName'den geliyor, key'den (userId) değil.
+    const names = Array.from(typingUsers.values()).map(v => v.displayName);
 
     if (names.length === 0) {
         document.getElementById('hp-typing-indicator')?.remove();
@@ -1544,22 +1688,24 @@ function renderTypingIndicator() {
     msgDiv.scrollTop = msgDiv.scrollHeight;
 }
 
-function registerTyping(username) {
-    if (typingUsers.has(username)) clearTimeout(typingUsers.get(username));
+function registerTyping(userId, displayName) {
+    const existing = typingUsers.get(userId);
+    if (existing) clearTimeout(existing.timeoutId);
     const timeoutId = setTimeout(() => {
-        typingUsers.delete(username);
+        typingUsers.delete(userId);
         renderTypingIndicator();
     }, TYPING_EXPIRE_MS);
-    typingUsers.set(username, timeoutId);
+    typingUsers.set(userId, { timeoutId, displayName });
     renderTypingIndicator();
 }
 
 // Mesajı gerçekten gönderdiğinde "yazıyor" göstergesinin doğal süresi (3sn)
 // dolana kadar asılı kalmaması için hemen temizliyoruz.
-function clearTyping(username) {
-    if (!typingUsers.has(username)) return;
-    clearTimeout(typingUsers.get(username));
-    typingUsers.delete(username);
+function clearTyping(userId) {
+    const existing = typingUsers.get(userId);
+    if (!existing) return;
+    clearTimeout(existing.timeoutId);
+    typingUsers.delete(userId);
     renderTypingIndicator();
 }
 
@@ -1606,21 +1752,21 @@ function setupVideoListeners() {
     videoElement.addEventListener('play', () => {
         if (consumeSuppressedVideoEvent('play')) return;
         if (connection?.state === signalR.HubConnectionState.Connected) {
-            connection.invoke("SendPlay", currentRoom, videoElement.currentTime, currentUser);
+            connection.invoke("SendPlay", currentRoom, videoElement.currentTime);
         }
     });
 
     videoElement.addEventListener('pause', () => {
         if (consumeSuppressedVideoEvent('pause')) return;
         if (connection?.state === signalR.HubConnectionState.Connected) {
-            connection.invoke("SendPause", currentRoom, videoElement.currentTime, currentUser);
+            connection.invoke("SendPause", currentRoom, videoElement.currentTime);
         }
     });
 
     videoElement.addEventListener('seeked', () => {
         if (consumeSuppressedVideoEvent('seeked')) return;
         if (connection?.state === signalR.HubConnectionState.Connected) {
-            connection.invoke("SendSeek", currentRoom, videoElement.currentTime, currentUser);
+            connection.invoke("SendSeek", currentRoom, videoElement.currentTime);
         }
     });
 }
@@ -1653,8 +1799,8 @@ document.addEventListener('yt-navigate-finish', () => {
         setupVideoListeners();
 
         // Kullanıcı bizzat (elle) video değiştirdiyse sunucuya bildir
-        if (connection?.state === signalR.HubConnectionState.Connected && currentRoom && currentUser) {
-            connection.invoke("ChangeVideo", currentRoom, currentVideoId, currentUser);
+        if (connection?.state === signalR.HubConnectionState.Connected && currentRoom) {
+            connection.invoke("ChangeVideo", currentRoom, currentVideoId);
         }
     }
 });

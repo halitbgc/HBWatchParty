@@ -32,7 +32,11 @@ const ICE_RESTART_MAX_ATTEMPTS = 10;
 
 let connection = null;
 let currentRoom = null;
-let currentUser = null;
+let currentUserId = null; // giriş yapılan hesabın userId'si — bkz. requestAuthFromBackground
+// userId -> displayName — bu doküman hiçbir katılımcı listesi göstermiyor,
+// sadece teşhis/log amaçlı tutuluyor (bkz. VoicePeerJoined). ReceiveVoiceSignal
+// artık displayName taşımıyor (WebRTC sinyalleşmesi zaten userId ile çalışıyor).
+const voicePeerDisplayNames = new Map();
 let rawMicStream = null;   // getUserMedia'nın ham çıktısı (sadece leaveVoice'ta durdurmak için tutulur)
 let localStream = null;    // WebRTC'ye eklenen, noise-gate'ten geçmiş İŞLENMİŞ stream
 
@@ -43,87 +47,92 @@ let gateMonitorTimer = null;
 let pttArmed = false;   // "V" basılı mı
 let gateOpen = false;   // kapı şu an açık mı (konuşma algılandı mı)
 
-// username -> RTCPeerConnection
+// PEER YÖNETİMİ ARTIK userId İLE ANAHTARLANIYOR, görünen ad (displayName) İLE
+// DEĞİL — görünen ad benzersiz olmak zorunda değil (bkz. görev tanımı), aynı
+// adlı iki kişi aynı odadaysa displayName ile anahtarlamak ses sinyalinin
+// yanlış kişiye gitmesine yol açardı (tam olarak düzelttiğimiz hata).
+
+// userId -> RTCPeerConnection
 const peers = new Map();
-// username -> HTMLAudioElement (karşı tarafın sesini çalan gizli <audio>)
+// userId -> HTMLAudioElement (karşı tarafın sesini çalan gizli <audio>)
 const audioElements = new Map();
-// username -> RTCIceCandidate[] (remote description henüz set edilmeden önce gelen adaylar)
+// userId -> RTCIceCandidate[] (remote description henüz set edilmeden önce gelen adaylar)
 const pendingIceCandidates = new Map();
-// username -> kaç kez ICE restart denendiği
+// userId -> kaç kez ICE restart denendiği
 const iceRestartAttempts = new Map();
-// hangi username'ler için şu an bir ICE restart döngüsü çalışıyor (aynı anda birden fazla döngü başlamasın diye)
+// hangi userId'ler için şu an bir ICE restart döngüsü çalışıyor (aynı anda birden fazla döngü başlamasın diye)
 const iceRestartInProgress = new Set();
 
-function sendSignal(targetUsername, payload) {
+function sendSignal(targetUserId, payload) {
     if (!connection || connection.state !== signalR.HubConnectionState.Connected) return;
-    connection.invoke("SendVoiceSignal", currentRoom, targetUsername, JSON.stringify(payload))
+    connection.invoke("SendVoiceSignal", currentRoom, targetUserId, JSON.stringify(payload))
         .catch(err => console.error("HB WatchParty (voice): sinyal gönderilemedi", err));
 }
 
-function getOrCreateAudioElement(username) {
-    let audio = audioElements.get(username);
+function getOrCreateAudioElement(userId) {
+    let audio = audioElements.get(userId);
     if (!audio) {
         audio = document.createElement('audio');
         audio.autoplay = true;
         document.body.appendChild(audio);
-        audioElements.set(username, audio);
+        audioElements.set(userId, audio);
     }
     return audio;
 }
 
-function closePeer(username) {
-    const pc = peers.get(username);
+function closePeer(userId) {
+    const pc = peers.get(userId);
     if (pc) {
         pc.close();
-        peers.delete(username);
+        peers.delete(userId);
     }
-    const audio = audioElements.get(username);
+    const audio = audioElements.get(userId);
     if (audio) {
         audio.srcObject = null;
         audio.remove();
-        audioElements.delete(username);
+        audioElements.delete(userId);
     }
-    pendingIceCandidates.delete(username);
-    iceRestartAttempts.delete(username);
-    iceRestartInProgress.delete(username);
+    pendingIceCandidates.delete(userId);
+    iceRestartAttempts.delete(userId);
+    iceRestartInProgress.delete(userId);
 }
 
 // pc "disconnected"/"failed" durumuna düştüğünde çağrılır. Birkaç saniye
 // bekleyip (çoğu zaman kendi kendine toparlanır) hâlâ bozuksa iceRestart:true
 // ile yeni bir offer gönderir. Karşı taraftaki handleIncomingSignal offer
 // handler'ı zaten pc varsa yeniden kullandığı için ekstra bir şey gerekmiyor.
-function scheduleIceRestart(username) {
-    const attempts = iceRestartAttempts.get(username) || 0;
+function scheduleIceRestart(userId) {
+    const attempts = iceRestartAttempts.get(userId) || 0;
     if (attempts >= ICE_RESTART_MAX_ATTEMPTS) {
-        console.error(`HB WatchParty (voice): ${username} ile bağlantı ${ICE_RESTART_MAX_ATTEMPTS} denemede kurulamadı, vazgeçiliyor`);
-        closePeer(username);
+        console.error(`HB WatchParty (voice): ${userId} ile bağlantı ${ICE_RESTART_MAX_ATTEMPTS} denemede kurulamadı, vazgeçiliyor`);
+        closePeer(userId);
         return;
     }
-    iceRestartAttempts.set(username, attempts + 1);
+    iceRestartAttempts.set(userId, attempts + 1);
 
     setTimeout(async () => {
-        const pc = peers.get(username);
-        if (!pc) { iceRestartInProgress.delete(username); return; }
+        const pc = peers.get(userId);
+        if (!pc) { iceRestartInProgress.delete(userId); return; }
         if (pc.connectionState === "connected" || pc.connectionState === "closed") {
-            iceRestartInProgress.delete(username);
+            iceRestartInProgress.delete(userId);
             return;
         }
         try {
             const offer = await pc.createOffer({ iceRestart: true });
             await pc.setLocalDescription(offer);
-            sendSignal(username, { type: "offer", data: offer });
+            sendSignal(userId, { type: "offer", data: offer });
         } catch (e) {
             console.error("HB WatchParty (voice): ICE restart teklifi oluşturulamadı", e);
         }
         if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
-            scheduleIceRestart(username);
+            scheduleIceRestart(userId);
         } else {
-            iceRestartInProgress.delete(username);
+            iceRestartInProgress.delete(userId);
         }
     }, ICE_RESTART_DELAY_MS);
 }
 
-function createPeerConnection(username) {
+function createPeerConnection(userId) {
     const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
     if (localStream) {
@@ -132,68 +141,68 @@ function createPeerConnection(username) {
 
     pc.onicecandidate = (event) => {
         if (event.candidate) {
-            sendSignal(username, { type: "ice-candidate", data: event.candidate });
+            sendSignal(userId, { type: "ice-candidate", data: event.candidate });
         }
     };
 
     pc.ontrack = (event) => {
-        const audio = getOrCreateAudioElement(username);
+        const audio = getOrCreateAudioElement(userId);
         audio.srcObject = event.streams[0];
     };
 
     pc.onconnectionstatechange = () => {
         if (pc.connectionState === "connected") {
-            iceRestartAttempts.delete(username);
-            iceRestartInProgress.delete(username);
+            iceRestartAttempts.delete(userId);
+            iceRestartInProgress.delete(userId);
         } else if (pc.connectionState === "closed") {
-            closePeer(username);
+            closePeer(userId);
         } else if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
             // Hemen kapatmak yerine önce ICE restart ile toparlanmayı dene —
             // ör. NAT eşlemesi düşmesi veya kısa bir ağ kopması genelde bununla
             // düzelir, karşı tarafın gerçekten ayrılıp ayrılmadığını beklemeye
             // gerek kalmaz.
-            if (!iceRestartInProgress.has(username)) {
-                iceRestartInProgress.add(username);
-                scheduleIceRestart(username);
+            if (!iceRestartInProgress.has(userId)) {
+                iceRestartInProgress.add(userId);
+                scheduleIceRestart(userId);
             }
         }
     };
 
-    peers.set(username, pc);
+    peers.set(userId, pc);
     return pc;
 }
 
-async function flushPendingIceCandidates(username) {
-    const pc = peers.get(username);
-    const queued = pendingIceCandidates.get(username);
+async function flushPendingIceCandidates(userId) {
+    const pc = peers.get(userId);
+    const queued = pendingIceCandidates.get(userId);
     if (!pc || !queued) return;
     for (const candidate of queued) {
         try { await pc.addIceCandidate(candidate); } catch (e) { /* yoksay */ }
     }
-    pendingIceCandidates.delete(username);
+    pendingIceCandidates.delete(userId);
 }
 
-async function initiateOfferTo(username) {
-    const pc = createPeerConnection(username);
+async function initiateOfferTo(userId) {
+    const pc = createPeerConnection(userId);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    sendSignal(username, { type: "offer", data: offer });
+    sendSignal(userId, { type: "offer", data: offer });
 }
 
-async function handleIncomingSignal(fromUsername, payload) {
-    let pc = peers.get(fromUsername);
+async function handleIncomingSignal(fromUserId, payload) {
+    let pc = peers.get(fromUserId);
 
     if (payload.type === "offer") {
-        if (!pc) pc = createPeerConnection(fromUsername);
+        if (!pc) pc = createPeerConnection(fromUserId);
         await pc.setRemoteDescription(new RTCSessionDescription(payload.data));
-        await flushPendingIceCandidates(fromUsername);
+        await flushPendingIceCandidates(fromUserId);
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        sendSignal(fromUsername, { type: "answer", data: answer });
+        sendSignal(fromUserId, { type: "answer", data: answer });
     } else if (payload.type === "answer") {
         if (!pc) return; // biz offer göndermemişsek beklenmeyen bir answer, yoksay
         await pc.setRemoteDescription(new RTCSessionDescription(payload.data));
-        await flushPendingIceCandidates(fromUsername);
+        await flushPendingIceCandidates(fromUserId);
     } else if (payload.type === "ice-candidate") {
         const candidate = new RTCIceCandidate(payload.data);
         if (pc && pc.remoteDescription) {
@@ -202,8 +211,8 @@ async function handleIncomingSignal(fromUsername, payload) {
             // Remote description henüz gelmediyse (offer/answer'dan önce ICE
             // adayı gelmiş olabilir) sıraya al, flushPendingIceCandidates ile
             // sonradan uygulanır.
-            if (!pendingIceCandidates.has(fromUsername)) pendingIceCandidates.set(fromUsername, []);
-            pendingIceCandidates.get(fromUsername).push(candidate);
+            if (!pendingIceCandidates.has(fromUserId)) pendingIceCandidates.set(fromUserId, []);
+            pendingIceCandidates.get(fromUserId).push(candidate);
         }
     }
 }
@@ -292,27 +301,31 @@ function setMicEnabled(enabled) {
 // tuhaflığı). Bu yüzden token'ı HER ZAMAN background.js'ten (normal bir
 // service worker — storage erişimi sorunsuz) istiyoruz; hem ilk katılımda
 // hem SignalR'ın accessTokenFactory'yi her çağırışında (bkz. joinVoice altı).
-function requestTokenFromBackground() {
+function requestAuthFromBackground() {
     return new Promise((resolve) => {
         try {
             chrome.runtime.sendMessage({ target: "background", action: "AUTH_GET_TOKEN" }, (response) => {
-                resolve(response?.token || null);
+                resolve({ token: response?.token || null, userId: response?.userId || null });
             });
         } catch (e) {
-            resolve(null);
+            resolve({ token: null, userId: null });
         }
     });
 }
 
-async function joinVoice(room, user) {
-    if (currentRoom === room && currentUser === user && connection?.state === signalR.HubConnectionState.Connected) {
+function requestTokenFromBackground() {
+    return requestAuthFromBackground().then(auth => auth.token);
+}
+
+async function joinVoice(room, userId) {
+    if (currentRoom === room && currentUserId === userId && connection?.state === signalR.HubConnectionState.Connected) {
         return { success: true }; // zaten bu odada bağlıyız
     }
 
     // /voicehub artık [Authorize] — geçerli bir token yoksa mikrofon izni
     // istemeye bile gerek yok, negotiate zaten 401 ile reddedecek.
-    const token = await requestTokenFromBackground();
-    if (!token) {
+    const auth = await requestAuthFromBackground();
+    if (!auth.token) {
         console.error("HB WatchParty (voice): VOICE_JOIN reddedildi — background.js'ten geçerli bir token alınamadı.");
         return { success: false, authRequired: true, error: "Oturumun sona ermiş. Sesli sohbete katılmak için tekrar giriş yap." };
     }
@@ -322,7 +335,10 @@ async function joinVoice(room, user) {
     }
 
     currentRoom = room;
-    currentUser = user;
+    // İçeriye VOICE_JOIN mesajıyla gelen userId ile background.js'in kendi
+    // storage'dan okuduğu userId TUTARLI olmalı (aynı hesap) — mesajdan geleni
+    // değil, background.js'in az önce doğruladığı gerçek userId'yi kullanıyoruz.
+    currentUserId = auth.userId || userId;
 
     try {
         rawMicStream = await navigator.mediaDevices.getUserMedia({
@@ -332,7 +348,7 @@ async function joinVoice(room, user) {
     } catch (err) {
         console.error("HB WatchParty (voice): mikrofon erişimi reddedildi", err);
         currentRoom = null;
-        currentUser = null;
+        currentUserId = null;
 
         // Offscreen document GÖRÜNMEZ olduğu için Chrome, mikrofon izin
         // balonunu bağlayacağı bir sekme/pencere bulamıyor ve getUserMedia
@@ -393,11 +409,11 @@ async function joinVoice(room, user) {
         // yeniden katılınca ReceiveVoiceRoster tekrar tetiklenip mevcut
         // kullanıcılarla temiz birer offer/answer akışıyla sıfırdan
         // bağlanacağız, o yüzden önce hepsini kapatıyoruz.
-        for (const username of Array.from(peers.keys())) {
-            closePeer(username);
+        for (const userId of Array.from(peers.keys())) {
+            closePeer(userId);
         }
         try {
-            await thisConnection.invoke("JoinVoiceRoom", currentRoom, currentUser);
+            await thisConnection.invoke("JoinVoiceRoom", currentRoom);
         } catch (e) {
             console.error("HB WatchParty (voice): yeniden katılma başarısız", e);
         }
@@ -413,25 +429,46 @@ async function joinVoice(room, user) {
         console.error("HB WatchParty (voice): sinyalleşme bağlantısı kapandı", err);
         connection = null;
         currentRoom = null;
-        currentUser = null;
+        currentUserId = null;
     });
 
-    connection.on("ReceiveVoiceRoster", (existingUsernames) => {
+    connection.on("ReceiveVoiceRoster", (roster) => {
         // Protokol: çakışan çift-offer olmasın diye odaya YENİ katılan taraf
         // her zaman mevcut peer'lara offer gönderir; mevcut peer'lar bekler.
-        existingUsernames.forEach(username => {
-            if (username !== currentUser) initiateOfferTo(username).catch(console.error);
+        // roster: [{ userId, displayName }, ...] — displayName burada WebRTC
+        // akışı için kullanılmıyor (bu doküman katılımcı listesi göstermiyor),
+        // sadece log/teşhis amaçlı önbelleğe alınıyor.
+        (Array.isArray(roster) ? roster : []).forEach(({ userId, displayName }) => {
+            voicePeerDisplayNames.set(userId, displayName);
+            if (userId !== currentUserId) initiateOfferTo(userId).catch(console.error);
         });
     });
 
-    connection.on("VoicePeerLeft", (username) => {
-        closePeer(username);
+    // Yeni bir katılımcı sesli sohbete katıldığında tetiklenir. Aktif bir
+    // eylem gerekmiyor: protokol gereği offer'ı HER ZAMAN sonradan katılan
+    // taraf gönderiyor (yukarıdaki ReceiveVoiceRoster), biz sadece gelen
+    // offer'ı handleIncomingSignal'da fromUserId ile karşılıyoruz.
+    connection.on("VoicePeerJoined", (userId, displayName) => {
+        voicePeerDisplayNames.set(userId, displayName);
+        console.log(`HB WatchParty (voice): ${displayName} sesli sohbete katıldı (userId=${userId})`);
     });
 
-    connection.on("ReceiveVoiceSignal", (fromUsername, payloadJson) => {
+    // Biri sesli sohbetteyken görünen adını değiştirirse backend bunu canlı
+    // yayınlıyor — WebRTC bağlantısını hiç etkilemiyor (zaten userId ile
+    // çalışıyor), sadece log/teşhis önbelleğimizi güncel tutuyoruz.
+    connection.on("VoicePeerDisplayNameChanged", (userId, newDisplayName) => {
+        voicePeerDisplayNames.set(userId, newDisplayName);
+    });
+
+    connection.on("VoicePeerLeft", (userId) => {
+        voicePeerDisplayNames.delete(userId);
+        closePeer(userId);
+    });
+
+    connection.on("ReceiveVoiceSignal", (fromUserId, payloadJson) => {
         try {
             const payload = JSON.parse(payloadJson);
-            handleIncomingSignal(fromUsername, payload).catch(console.error);
+            handleIncomingSignal(fromUserId, payload).catch(console.error);
         } catch (e) {
             console.error("HB WatchParty (voice): geçersiz sinyal payload'ı", e);
         }
@@ -439,7 +476,7 @@ async function joinVoice(room, user) {
 
     try {
         await connection.start();
-        await connection.invoke("JoinVoiceRoom", currentRoom, currentUser);
+        await connection.invoke("JoinVoiceRoom", currentRoom);
         return { success: true };
     } catch (err) {
         const detail = String(err?.message || err);
@@ -455,17 +492,18 @@ async function joinVoice(room, user) {
 async function leaveVoice() {
     if (connection) {
         try {
-            if (connection.state === signalR.HubConnectionState.Connected && currentRoom && currentUser) {
-                await connection.invoke("LeaveVoiceRoom", currentRoom, currentUser);
+            if (connection.state === signalR.HubConnectionState.Connected && currentRoom) {
+                await connection.invoke("LeaveVoiceRoom", currentRoom);
             }
         } catch (e) { /* yoksay */ }
         try { await connection.stop(); } catch (e) { /* yoksay */ }
         connection = null;
     }
 
-    for (const username of Array.from(peers.keys())) {
-        closePeer(username);
+    for (const userId of Array.from(peers.keys())) {
+        closePeer(userId);
     }
+    voicePeerDisplayNames.clear();
 
     stopGateMonitor();
 
@@ -487,7 +525,7 @@ async function leaveVoice() {
     gateOpen = false;
 
     currentRoom = null;
-    currentUser = null;
+    currentUserId = null;
 }
 
 // background.js'ten gelen kontrol mesajları. "target" alanı ile sadece bize
@@ -497,7 +535,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message?.target !== "voiceOffscreen") return false;
 
     if (message.action === "VOICE_JOIN") {
-        joinVoice(message.room, message.user).then(sendResponse);
+        joinVoice(message.room, message.userId).then(sendResponse);
         return true;
     }
     if (message.action === "VOICE_LEAVE") {

@@ -97,8 +97,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // yerine token'ı buradan istemesi için (bkz. importScripts yorumu).
     if (message.action === "AUTH_GET_TOKEN") {
         (async () => {
-            const token = await hbGetValidToken();
-            sendResponse({ token });
+            // userId de dönüyoruz: voice-offscreen.js kendi userId'sini artık
+            // chrome.storage.local'a doğrudan erişemediği için (bkz. yukarıdaki
+            // importScripts yorumu) buradan öğreniyor — WebRTC peer'larını
+            // userId ile eşleştirmek (bkz. görev: userId tabanlı kimlik) için lazım.
+            const auth = await hbGetStoredAuth();
+            const token = hbIsAuthValid(auth) ? auth.token : null;
+            sendResponse({ token, userId: auth?.userId || null });
         })();
         return true;
     }
@@ -117,9 +122,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             }
 
             await ensureOffscreenDocument();
-            const result = await sendToOffscreen({ action: "VOICE_JOIN", room: message.room, user: message.user });
+            const result = await sendToOffscreen({ action: "VOICE_JOIN", room: message.room, userId: message.userId });
             if (result?.success) {
-                await setActiveVoice({ tabId, room: message.room, user: message.user });
+                await setActiveVoice({ tabId, room: message.room, userId: message.userId });
             } else if (result?.permissionNeeded) {
                 // Offscreen doküman görünmez olduğu için mikrofon izin balonunu
                 // gösteremiyor (bkz. voice-offscreen.js joinVoice). Görünür küçük
@@ -167,7 +172,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         (async () => {
             const activeVoice = await getActiveVoice();
             const inVoice = !!activeVoice && activeVoice.tabId === tabId;
-            sendResponse({ inVoice, room: inVoice ? activeVoice.room : null, user: inVoice ? activeVoice.user : null });
+            sendResponse({ inVoice, room: inVoice ? activeVoice.room : null, userId: inVoice ? activeVoice.userId : null });
         })();
         return true;
     }
