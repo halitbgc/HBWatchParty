@@ -1257,8 +1257,6 @@ function renderUserList() {
     if (!list) return;
     list.innerHTML = '';
     // roomUsers: [{ userId, displayName }, ...] — "bu ben miyim" karşılaştırması
-    // userId ile yapılıyor (displayName benzersiz değil, aynı adlı iki katılımcı
-    // olabilir — ikisi de ayrı satır olarak listelenmeli, bkz. görev tanımı).
     roomUsers.forEach(({ userId, displayName }) => {
         const li = document.createElement('li');
         const isSelf = userId === currentUserId;
@@ -1285,8 +1283,7 @@ function setupUserListPopover() {
     });
 }
 
-// AYARLAR PANELİ: sadece bu panelin içindeki "Sesli Sohbet Modu" ve "Bas-Konuş
-// Tuşu" seçimlerini yönetir. Ayarlar paneli açılıp kapanırken sohbet/login
+// AYARLAR PANELİ: sadece bu panelin içindeki ayarlari yönetir. Ayarlar paneli açılıp kapanırken sohbet/login
 // alanının GERÇEK bağlantı durumuna göre geri gösterilmesi için mevcut
 // showConnectedUI() fonksiyonu yeniden kullanılıyor — kopyalanmıyor.
 function openSettingsPanel() {
@@ -1466,8 +1463,6 @@ function setupSettingsUI() {
     });
 
     // Kullanıcı bir tuşa basmadan başka bir yere tıklarsa yakalamayı iptal et
-    // — aksi halde "dinleme" modu asılı kalıp örn. sohbete yazarken basılan
-    // İLK harfi yanlışlıkla yeni bas-konuş tuşu sanabilirdi.
     document.addEventListener('mousedown', (e) => {
         if (!capturingKey || keyCaptureBtn.contains(e.target)) return;
         capturingKey = false;
@@ -1573,10 +1568,7 @@ function setupVoiceUI() {
 
     // SADECE "yeni tuş belirle" butonuna basılıp gerçekten yeni bir tuş
     // bekleniyorken (bkz. setupSettingsUI'daki keyCaptureBtn 'listening' class'ı)
-    // eski PTT tuşunun burada da tetiklenmesini engelliyoruz. Önceden bunun
-    // yerine "Ayarlar paneli açık mı" diye bakılıyordu — bu da Ayarlar'ı
-    // HERHANGİ bir sebeple (tema, görünen ad vb.) açık tutarken PTT'yi
-    // gereksiz yere tamamen kilitliyordu.
+    // eski PTT tuşunun burada da tetiklenmesini engelliyoruz. 
     function isCapturingPttKey() {
         return document.getElementById('hp-ptt-key-capture-btn')?.classList.contains('listening') ?? false;
     }
@@ -1613,9 +1605,8 @@ function setVoiceUIState(inVoice) {
     applyPttButtonVisibility();
 }
 
-// Bas-konuş butonu SADECE sesli sohbetteyken VE Bas-Konuş Modu seçiliyken
-// gösterilir (Normal Mod'da mikrofon zaten sürekli açık, tuşa/butona basmaya
-// gerek yok). setupVoiceUI'daki mevcut "pttBtn.style.display === 'none' ise
+
+// setupVoiceUI'daki mevcut "pttBtn.style.display === 'none' ise
 // yoksay" kontrolü sayesinde bu tek fonksiyon hem "sesli sohbette değil" hem
 // "Normal Mod'dayız" durumlarını aynı şekilde kapsıyor.
 function applyPttButtonVisibility() {
