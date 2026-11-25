@@ -42,11 +42,11 @@ YouTube videolarını arkadaşlarınla senkronize izlemeni sağlayan bir Chrome 
 
 ## Backend
 
-Eklenti `https://hbwatch.arztakvim.com.tr` adresindeki SignalR sunucusuyla çalışır:
+Eklenti bir SignalR sunucusuyla çalışır:
 
 - `/api/auth/login`, `/api/auth/register` — kimlik doğrulama
 - `/api/rooms` — oda oluşturma / kontrol
 - `/watchpartyhub` — oynatma senkronu ve sohbet
 - `/voicehub` — sesli sohbet sinyalleşmesi
 
-Farklı bir sunucu kullanmak için [auth.js](auth.js) içindeki `BACKEND_BASE_URL` değerini ve [manifest.json](manifest.json) içindeki `host_permissions` alanını güncelle.
+Sunucu adresi [auth.js](auth.js) içindeki `BACKEND_BASE_URL` sabitinde tanımlıdır. Farklı bir sunucu kullanmak için bu değeri ve [manifest.json](manifest.json) içindeki `host_permissions` alanını güncelle.
